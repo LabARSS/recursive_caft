@@ -38,25 +38,25 @@ def main():
         print(f"\n==> Model {model} | branches={branches}")
 
         #FIRSTLY A, then C
-        a_file = out_dir / f"{ds_stem}_synth_{model_path}_a_f{limit}.jsonl"
+        a_file = out_dir / f"{ds_stem}_synth_{model_path}_a_f{limit}.parquet"
 
         for b in branches:
-            out_name = f"{ds_stem}_synth_{model_path}_{b.lower()}_f{limit}.jsonl"
-            out_jsonl = out_dir / out_name
+            out_name = f"{ds_stem}_synth_{model_path}_{b.lower()}_f{limit}.parquet"
+            out_filename = out_dir / out_name
             print(f"  -> Branch {b}: writing to {out_name}")
 
-            a_jsonl_path = str(a_file) if b == "C" else None
+            a_file_path = str(a_file) if b == "C" else None
 
             synth_on_dataset(
                 in_filename=str(in_tsv),
-                out_jsonl=str(out_jsonl),
+                out_filename=str(out_filename),
                 model=model,
                 max_tokens=max_tokens,
                 dump_every=dump_every,
                 limit=limit,
                 branch=b,
                 chunk_size=chunk_size,
-                a_jsonl_path=a_jsonl_path,
+                a_file_path=a_file_path,
                 temperature=temps[b],
             )
 
