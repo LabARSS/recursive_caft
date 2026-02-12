@@ -15,12 +15,12 @@ class TokenizedRow:
 
 
 class BaseDatasetAdapter(ABC):
-    def __init__(self, df_path: str, tokenizer: PreTrainedTokenizer):
+    def __init__(self, id: str, df_path: str):
+        self.id: str = id
         self.df_path: str = df_path
-        self.tokenizer: PreTrainedTokenizer = tokenizer
 
     @abstractmethod
-    def process_row(self, row: pd.Series) -> TokenizedRow: ...
+    def process_row(self, row: pd.Series, tokenizer: PreTrainedTokenizer) -> TokenizedRow: ...
 
     def _load_df(self) -> pd.DataFrame:
         df = pd.read_parquet(
@@ -28,13 +28,13 @@ class BaseDatasetAdapter(ABC):
         )
         return df
 
-    def process_dataset(self):
+    def process_dataset(self, tokenizer: PreTrainedTokenizer) -> Dataset:
         df = self._load_df()
 
         dataset = Dataset.from_pandas(df)
 
         processed_ds = dataset.map(
-            lambda row: asdict(self.process_row(row)),
+            lambda row: asdict(self.process_row(row, tokenizer)),
             num_proc=4,
             remove_columns=dataset.column_names,
         )

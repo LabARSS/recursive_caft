@@ -1,6 +1,7 @@
 from abc import abstractmethod
 
 import pandas as pd
+from transformers import PreTrainedTokenizer
 
 from core.datasets.base_dataset_adapter import BaseDatasetAdapter, TokenizedRow
 
@@ -18,20 +19,20 @@ class CausalDatasetAdapter(BaseDatasetAdapter):
     @abstractmethod
     def row_id(self, row: pd.Series) -> str: ...
 
-    def process_row(self, row: pd.Series) -> TokenizedRow:
+    def process_row(self, row: pd.Series, tokenizer: PreTrainedTokenizer) -> TokenizedRow:
         input_messages = [
             {"role": "system", "content": self.system_prompt(row)},
             {"role": "user", "content": self.user_prompt(row)},
         ]
 
-        full = self.tokenizer.apply_chat_template(
+        full = tokenizer.apply_chat_template(
             input_messages + [{"role": "assistant", "content": self.assistant_response(row)}],
             tokenize=True,
             add_generation_prompt=False,
             return_dict=True,
         )
 
-        prefix = self.tokenizer.apply_chat_template(
+        prefix = tokenizer.apply_chat_template(
             input_messages,
             tokenize=True,
             add_generation_prompt=True,

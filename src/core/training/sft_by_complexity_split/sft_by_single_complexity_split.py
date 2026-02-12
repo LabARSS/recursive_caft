@@ -96,55 +96,6 @@ def directory_is_empty(directory: str, expected_epochs: int) -> bool:
 
     return True
 
-
-def get_sys_prompt(row):
-    subject = row["base_cluster"]
-    return prompts.single_token_sys_prompt(subject)
-
-
-def get_user_prompt(row):
-    question = row["question"]
-    options = ast.literal_eval(row["options"])
-    return prompts.single_token_answer_prompt(question, options)
-
-
-def get_sys_prompt_thinking(row):
-    """System prompt for training with thinking/reasoning tokens."""
-    subject = row["base_cluster"]
-    return prompts.single_token_sys_prompt_with_thinking(subject)
-
-
-def get_user_prompt_thinking(row):
-    """User prompt — same format as single-token, model produces thinking + answer."""
-    question = row["question"]
-    options = ast.literal_eval(row["options"])
-    return prompts.single_token_answer_prompt(question, options)
-
-
-def get_sys_prompt_cot_eval(row):
-    subject = row["base_cluster"]
-    return cot_prompts.cot_sys_prompt(subject)
-
-
-def get_user_prompt_cot_eval(row):
-    question = row["question"]
-    options = ast.literal_eval(row["options"])
-    return cot_prompts.cot_answer_prompt(question, options)
-
-
-def get_sys_prompt_cot_eval_thinking(row):
-    """System prompt for CoT eval when model was trained with thinking tokens."""
-    subject = row["base_cluster"]
-    return prompts.single_token_sys_prompt_with_thinking(subject)
-
-
-def get_user_prompt_cot_eval_thinking(row):
-    """User prompt for CoT eval with thinking — same as training prompt."""
-    question = row["question"]
-    options = ast.literal_eval(row["options"])
-    return prompts.single_token_answer_prompt(question, options)
-
-
 # helper for default LoRA
 def _build_lora_config(model, lora_kwargs: dict | None) -> LoraConfig:
     lora_kwargs = lora_kwargs or {}
