@@ -1,7 +1,7 @@
 import json
 import subprocess
-from typing import Any
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel
 from pydraconf import PydraConfig
@@ -66,6 +66,9 @@ class BaseTrainer[TConfig: BaseTrainerConfig[Any] = BaseTrainerConfig]:
         set_seed()
 
         logger.info(subprocess.run(["nvidia-smi"], capture_output=True, text=True).stdout)
+
+        self.config.log_summary()
+        self.config.export_config(str(Path(self.config.out_path) / "trainer_config.json"))
 
         train_ds = self._prepare_data()
         self._run_training(train_ds)
