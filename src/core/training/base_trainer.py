@@ -14,24 +14,41 @@ from transformers import (
 from transformers.trainer_seq2seq import Seq2SeqTrainer
 
 from core.datasets.base_dataset_adapter import BaseDatasetAdapter
-from core.training.callbacks.eval_every_n_epoch import EvalEveryNEpochsCallback
-from core.training.callbacks.save_and_log_weights import SaveOnEpochEndAndLogWeightsCallback
-from core.training.callbacks.save_every_n_epoch import SaveEveryNEpochsCallback
+from core.training.callbacks.save_by_schedule import SaveByScheduleCallback
 from core.utils.last_checkpoint_dir import get_last_checkpoint_dir
 from core.utils.logger import logger
 from core.utils.seed import set_seed
 
 
 class TrainingArgs(BaseModel):
-    epochs: int
+    num_train_epochs: int
+    effective_train_batch_size: int
+    per_device_train_batch_size: int
+
+    # Sane defaults for SFT fine-tuning
+    learning_rate: float = 2e-5
+    lr_scheduler_type: str = "cosine"
+    warmup_ratio: float = 0.03
+    weight_decay: float = 0.1
+    max_grad_norm: float = 1.0
+    optim: str = "adamw_torch"
+    gradient_checkpointing: bool = True
+    bf16: bool = True
+    report_to: str = "none"
+    seed: int = 42
+    data_seed: int = 42
+    torch_compile: bool = True
+    save_strategy: str = "epoch"
+    logging_steps: int = 10
+    logging_first_step: bool = True
 
 
 class BaseTrainerConfig(PydraConfig):
     out_path: str
     model_id: str
     train_dataset: BaseDatasetAdapter
-    test_datasets: list[BaseDatasetAdapter]
     training_args: TrainingArgs
+    save_schedule: list[int] | None = None
 
 
 class BaseTrainer:
@@ -41,7 +58,7 @@ class BaseTrainer:
         self._model: AutoModelForCausalLM | None = None
 
     def train(self):
-        if not self._directory_is_empty(self.config.out_path, self.config.training_args.epochs):
+        if not self._directory_is_empty(self.config.out_path, self.config.training_args.num_train_epochs):
             logger.error("BaseTrainerConfig.train -> out_path not empty", self.config.out_path)
             return None
 
@@ -49,8 +66,8 @@ class BaseTrainer:
 
         logger.info(subprocess.run(["nvidia-smi"], capture_output=True, text=True).stdout)
 
-        train_ds, test_combined_ds_dict = self._prepare_data()
-        self._run_training(train_ds, test_combined_ds_dict)
+        train_ds = self._prepare_data()
+        self._run_training(train_ds)
 
         return get_last_checkpoint_dir(self.config.out_path)
 
@@ -79,51 +96,37 @@ class BaseTrainer:
 
     @property
     def training_args(self):
-        return Seq2SeqTrainingArguments(**self.config.training_args.model_dump())
+        return Seq2SeqTrainingArguments(
+            **self.config.training_args.model_dump(),
+            **self._batch_size_config(
+                self.config.training_args.effective_train_batch_size,
+                self.config.training_args.per_device_train_batch_size,
+            ),
+            output_dir=self.config.out_path,
+        )
 
     def _prepare_data(self):
         train_ds = self.config.train_dataset.process_dataset(self.tokenizer)
-        test_combined_ds_dict = {
-            dataset_adapter.id: dataset_adapter.process_dataset(self.tokenizer)
-            for dataset_adapter in self.config.test_datasets
-        }
         logger.info("Dataset samples")
         logger.info("Train")
         logger.info(f"Input: {self.tokenizer.decode(train_ds[0]['input_ids'])}")
         logger.info(f"Labels: {self.tokenizer.decode(train_ds[0]['labels'])}")
-        for ds_id, test_ds in test_combined_ds_dict.items():
-            logger.info(f"Test dataset: {ds_id}")
-            logger.info(f"Test input: {self.tokenizer.decode(test_ds[0]['input_ids'])}")
-            logger.info(f"Test labels: {self.tokenizer.decode(test_ds[0]['labels'])}")
 
-        return train_ds, test_combined_ds_dict
+        return train_ds
 
-    def _run_training(self, train_ds, test_combined_ds_dict):
+    def _run_training(self, train_ds):
         trainer = Seq2SeqTrainer(
             model=self.model,
             args=self.training_args,
             train_dataset=train_ds,
-            eval_dataset=test_combined_ds_dict,
             data_collator=self.data_collator,
-            compute_metrics=self._compute_metrics,
             processing_class=self.tokenizer,
         )
 
-        trainer.add_callback(
-            SaveOnEpochEndAndLogWeightsCallback(
-                output_dir=self.config.out_path,
-                save_full_model_for_non_lora=False,
-            )
-        )
-
-        trainer.add_callback(SaveEveryNEpochsCallback(n_epochs=4))
-        trainer.add_callback(EvalEveryNEpochsCallback(schedule=[(1, 5, 1), (6, 10, 2), (11, 30, 5)]))
+        if self.config.save_schedule is not None:
+            trainer.add_callback(SaveByScheduleCallback(schedule=self.config.save_schedule))
 
         trainer.train(resume_from_checkpoint=True)
-
-    def _compute_metrics(self, eval_pred):
-        # TODO
-        pass
 
     def _directory_is_empty(self, directory: str, expected_epochs: int) -> bool:
         p = Path(directory)
@@ -148,3 +151,13 @@ class BaseTrainer:
                         return False
 
         return True
+
+    def _batch_size_config(effective_batch_size: int, per_device_train_batch_size: int):
+        gradient_accumulation_steps = effective_batch_size // per_device_train_batch_size
+        assert effective_batch_size % per_device_train_batch_size == 0, (
+            f"Effective batch size {effective_batch_size} is not divisible by per device batch size {per_device_train_batch_size}"
+        )
+        return {
+            "per_device_train_batch_size": per_device_train_batch_size,
+            "gradient_accumulation_steps": gradient_accumulation_steps,
+        }

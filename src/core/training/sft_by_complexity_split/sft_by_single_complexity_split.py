@@ -22,7 +22,7 @@ import core.prompts.mmlu_cot_answer as cot_prompts
 import core.prompts.mmlu_single_token_answer as prompts
 from core.training.sft_by_complexity_split.cot_eval_trainer import CoTEvalTrainer
 from core.training.callbacks.save_and_log_weights import SaveOnEpochEndAndLogWeightsCallback
-from core.training.callbacks.save_every_n_epoch import SaveEveryNEpochsCallback
+from core.training.callbacks.save_by_schedule import SaveEveryNEpochsCallback
 from core.training.callbacks.eval_every_n_epoch import EvalEveryNEpochsCallback
 
 from core.utils.device import DEVICE_MAP
