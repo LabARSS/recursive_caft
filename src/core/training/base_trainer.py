@@ -1,5 +1,6 @@
 import json
 import subprocess
+from typing import Any
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -20,7 +21,7 @@ from core.utils.logger import logger
 from core.utils.seed import set_seed
 
 
-class TrainingArgs(BaseModel):
+class BaseTrainingArgs(BaseModel):
     num_train_epochs: int
     effective_train_batch_size: int
     per_device_train_batch_size: int
@@ -43,16 +44,16 @@ class TrainingArgs(BaseModel):
     logging_first_step: bool = True
 
 
-class BaseTrainerConfig(PydraConfig):
+class BaseTrainerConfig[TTrainingArgs: BaseTrainingArgs = BaseTrainingArgs](PydraConfig):
     out_path: str
     model_id: str
     train_dataset: BaseDatasetAdapter
-    training_args: TrainingArgs
+    training_args: TTrainingArgs
     save_schedule: list[int] | None = None
 
 
-class BaseTrainer:
-    def __init__(self, config: BaseTrainerConfig):
+class BaseTrainer[TConfig: BaseTrainerConfig[Any] = BaseTrainerConfig]:
+    def __init__(self, config: TConfig):
         self.config = config
         self._tokenizer: PreTrainedTokenizer | None = None
         self._model: AutoModelForCausalLM | None = None
@@ -152,7 +153,7 @@ class BaseTrainer:
 
         return True
 
-    def _batch_size_config(effective_batch_size: int, per_device_train_batch_size: int):
+    def _batch_size_config(self, effective_batch_size: int, per_device_train_batch_size: int):
         gradient_accumulation_steps = effective_batch_size // per_device_train_batch_size
         assert effective_batch_size % per_device_train_batch_size == 0, (
             f"Effective batch size {effective_batch_size} is not divisible by per device batch size {per_device_train_batch_size}"
