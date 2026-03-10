@@ -4,6 +4,7 @@ from pathlib import Path
 import pandas as pd
 from pydantic import BaseModel
 from pydraconf import PydraConfig
+from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizer
 
 from core.datasets.qa_dataset import QADataset
@@ -54,7 +55,7 @@ class Evaluator:
         model.eval()
 
         results: list[EvaluationResult] = []
-        for ds, cached in zip(self._datasets, cached_results):
+        for ds, cached in tqdm(zip(self._datasets, cached_results), total=len(self._datasets), desc="Datasets"):
             if cached is not None:
                 results.append(cached)
             else:

@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 
 import torch
 import torch.nn.functional as F
+from tqdm import tqdm
 from transformers import DynamicCache, PreTrainedModel, PreTrainedTokenizer
 
 
@@ -87,6 +88,7 @@ class ContinuousBatchGenerator:
         results: list[list[int] | None] = [None] * len(prompts)
         queue: deque[tuple[int, list[int]]] = deque((i, p) for i, p in enumerate(prompts))
         active_slots: list[_Slot | None] = [None] * self.max_batch_size
+        pbar = tqdm(total=len(prompts), desc="Generating")
 
         while queue or any(s is not None for s in active_slots):
             # FILL: prefill empty slots with new prompts (batch_size=1 each)
@@ -111,7 +113,9 @@ class ContinuousBatchGenerator:
                 if last_token == self.eos_token_id or len(slot.generated_ids) >= self.max_new_tokens:
                     results[slot.index] = slot.generated_ids
                     active_slots[slot_idx] = None
+                    pbar.update(1)
 
+        pbar.close()
         return [r if r is not None else [] for r in results]
 
     def _prefill(self, prompt_idx: int, prompt_ids: list[int]) -> _Slot:
@@ -160,7 +164,7 @@ class ContinuousBatchGenerator:
         # attention_mask: [num_slots, max_cache_len + 1] (+1 for the new token)
         attn_mask = torch.zeros(num_slots, max_cache_len + 1, dtype=torch.long, device=device)
         for i, slot in enumerate(slots):
-            attn_mask[i, :slot_cache_lens[i]] = 1  # valid cached positions
+            attn_mask[i, : slot_cache_lens[i]] = 1  # valid cached positions
             attn_mask[i, max_cache_len] = 1  # the new token position (appended at end)
 
         # cache_position: shared across batch, points to where the new KV is appended
