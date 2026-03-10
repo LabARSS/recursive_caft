@@ -1,7 +1,10 @@
+import gc
 import json
 import subprocess
 from pathlib import Path
 from typing import Any
+
+import torch
 
 from pydantic import BaseModel
 from pydraconf import PydraConfig
@@ -137,6 +140,13 @@ class BaseTrainer[TConfig: BaseTrainerConfig[Any] = BaseTrainerConfig]:
         has_checkpoint = get_last_checkpoint_dir(self.config.out_path) is not None
         logger.info(f"Has checkpoint: {has_checkpoint}")
         trainer.train(resume_from_checkpoint=has_checkpoint)
+
+    def unload(self):
+        self._model = None
+        self._tokenizer = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     def _directory_is_empty(self, directory: str, expected_epochs: int) -> bool:
         p = Path(directory)

@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 from pydantic import BaseModel
 from pydraconf import PydraConfig
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizer
 
 from core.datasets.qa_dataset import QADataset
 from core.datasets.qa_dataset_adapter import QADatasetAdapter
@@ -13,8 +13,8 @@ from core.utils.logger import logger
 
 
 class GenerationConfig(BaseModel):
-    max_new_tokens: int = 4096
-    max_batch_size: int = 8
+    max_new_tokens: int
+    max_batch_size: int
     temperature: float = 0.0
     top_p: float = 1.0
     top_k: int = -1
@@ -24,7 +24,7 @@ class EvaluatorConfig(PydraConfig):
     model_path: str
     eval_dataset: QADatasetAdapter | list[QADatasetAdapter]
     out_path: str | None = None
-    generation: GenerationConfig = GenerationConfig()
+    generation: GenerationConfig
 
 
 class EvaluationResult(BaseModel):
@@ -34,8 +34,9 @@ class EvaluationResult(BaseModel):
 
 
 class Evaluator:
-    def __init__(self, config: EvaluatorConfig):
+    def __init__(self, config: EvaluatorConfig, tokenizer: PreTrainedTokenizer | None = None):
         self.config = config
+        self.tokenizer = tokenizer
 
     @property
     def _datasets(self) -> list[QADatasetAdapter]:
@@ -44,13 +45,20 @@ class Evaluator:
         return [self.config.eval_dataset]
 
     def evaluate(self) -> list[EvaluationResult]:
+        cached_results: list[EvaluationResult | None] = [self._load_cached_result(ds) for ds in self._datasets]
+
+        if all(r is not None for r in cached_results):
+            return cached_results  # type: ignore[return-value]
+
         model, tokenizer = self._load_model()
         model.eval()
 
         results: list[EvaluationResult] = []
-        for eval_dataset in self._datasets:
-            result = self._evaluate_single(eval_dataset, model, tokenizer)
-            results.append(result)
+        for ds, cached in zip(self._datasets, cached_results):
+            if cached is not None:
+                results.append(cached)
+            else:
+                results.append(self._evaluate_single(ds, model, tokenizer))
 
         return results
 
@@ -110,6 +118,15 @@ class Evaluator:
 
         return result
 
+    def _load_cached_result(self, eval_dataset: QADatasetAdapter) -> EvaluationResult | None:
+        results_path = self._eval_results_path_for(eval_dataset)
+        if not results_path.exists():
+            return None
+        with open(results_path) as f:
+            data = json.load(f)
+        logger.info(f"Found cached results at {results_path}, skipping evaluation")
+        return EvaluationResult(accuracy=data["accuracy"], total=data["total"], correct=data["correct"])
+
     def _out_path_for(self, eval_dataset: QADatasetAdapter) -> Path:
         dataset_id = eval_dataset.dataset.dataset_id
         if self.config.out_path:
@@ -133,8 +150,9 @@ class Evaluator:
 
         logger.info(f"Loading model from {self.config.model_path}")
         model = AutoModelForCausalLM.from_pretrained(self.config.model_path)
-        tokenizer = AutoTokenizer.from_pretrained(self.config.model_path)
-        return model, tokenizer
+        if not self.tokenizer:
+            self.tokenizer = AutoTokenizer.from_pretrained(self.config.model_path)
+        return model, self.tokenizer
 
     def _load_lora_model(self, model_path: Path, adapter_config: Path):
         from peft import PeftModel
@@ -149,8 +167,9 @@ class Evaluator:
         logger.info(f"Loading LoRA model: base={base_model_id}, adapter={model_path}")
         base_model = AutoModelForCausalLM.from_pretrained(base_model_id)
         model = PeftModel.from_pretrained(base_model, str(model_path))
-        tokenizer = AutoTokenizer.from_pretrained(base_model_id)
-        return model, tokenizer
+        if not self.tokenizer:
+            self.tokenizer = AutoTokenizer.from_pretrained(base_model_id)
+        return model, self.tokenizer
 
     def _save_results(self, eval_dataset: QADatasetAdapter, result: EvaluationResult, all_results: list[dict]) -> None:
         out_path = self._out_path_for(eval_dataset)

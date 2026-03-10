@@ -4,6 +4,7 @@ from pathlib import Path
 
 import torch
 from pydraconf import PydraConfig
+from pydantic import Field
 
 from core.datasets.qa_dataset_adapter import QADatasetAdapter
 from core.evaluation.evaluator import EvaluationResult, Evaluator, EvaluatorConfig, GenerationConfig
@@ -15,7 +16,7 @@ class MultiCheckpointEvaluatorConfig(PydraConfig):
     eval_dataset: QADatasetAdapter | list[QADatasetAdapter]
     base_model_id: str | None = None
     out_path: str | None = None
-    generation: GenerationConfig = GenerationConfig()
+    generation: GenerationConfig
 
 
 class MultiCheckpointEvaluator:
