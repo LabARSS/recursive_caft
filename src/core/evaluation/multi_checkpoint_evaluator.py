@@ -53,7 +53,7 @@ class MultiCheckpointEvaluator:
 
         if self.config.base_model_id:
             logger.info(f"Evaluating base model {self.config.base_model_id} as epoch 0...")
-            base_out_path = str(Path(self.config.out_path) / "base_model") if self.config.out_path else None
+            base_out_path = str(self._out_path / "base_model")
             base_config = EvaluatorConfig(
                 model_path=self.config.base_model_id,
                 eval_dataset=self.config.eval_dataset,
@@ -72,7 +72,7 @@ class MultiCheckpointEvaluator:
 
         for ckpt_dir in checkpoint_dirs:
             ckpt_name = ckpt_dir.name
-            ckpt_out_path = str(Path(self.config.out_path) / ckpt_name)
+            ckpt_out_path = str(self._out_path / ckpt_name)
 
             logger.info(f"Evaluating {ckpt_name}...")
 
@@ -107,8 +107,7 @@ class MultiCheckpointEvaluator:
         return state.get("epoch")
 
     def _save_summary(self, results: list[tuple[str, list[EvaluationResult], float | None]]) -> None:
-        out_path = Path(self.config.out_path)
-        out_path.mkdir(parents=True, exist_ok=True)
+        self._out_path.mkdir(parents=True, exist_ok=True)
 
         datasets = self._normalize_datasets()
 
@@ -126,8 +125,15 @@ class MultiCheckpointEvaluator:
                 for ckpt_name, eval_results, epoch in results
             ]
 
-        summary_path = out_path / "summary.json"
+        summary_path = self._out_path / "summary.json"
         with open(summary_path, "w") as f:
             json.dump(summary, f, indent=2)
 
         logger.info(f"Summary saved to {summary_path}")
+
+    @property
+    def _out_path(self) -> Path:
+        if self.config.out_path:
+            return Path(self.config.out_path)
+
+        return Path(self.config.checkpoints_dir)
