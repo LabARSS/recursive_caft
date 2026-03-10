@@ -21,3 +21,7 @@ class BaseDataset[C: BaseDatasetConfig](ABC):
 
     @abstractmethod
     def row_id(self, row: dict) -> str: ...
+
+    @property
+    def dataset_id(self) -> str:
+        return self.__class__.__name__

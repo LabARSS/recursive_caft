@@ -39,4 +39,5 @@ packages = [
 dev = [
     "huggingface-hub[cli]>=0.29.3",
     "ipykernel>=6.29.5",
+    "pytest>=9.0.2",
 ]
