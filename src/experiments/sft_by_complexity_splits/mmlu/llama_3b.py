@@ -68,6 +68,7 @@ for group in range(6):
             ],
             base_model_id=MODEL_NAME,
             generation=GenerationConfig(max_new_tokens=1, max_batch_size=64),
+            summary_filename="summary_cot.json",
         ),
         tokenizer=tokenizer,
     )
@@ -93,6 +94,7 @@ for group in range(6):
             ],
             base_model_id=MODEL_NAME,
             generation=GenerationConfig(max_new_tokens=4096, max_batch_size=4),
+            summary_filename="summary_cot.json",
         ),
         tokenizer=tokenizer,
     )
