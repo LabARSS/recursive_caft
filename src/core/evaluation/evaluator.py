@@ -63,6 +63,7 @@ class Evaluator:
                 logger.warning("torch_compile=True but CUDA not available — skipping compilation.")
             else:
                 logger.info("Compiling model with torch.compile(dynamic=True)... First forward call will be slow.")
+                torch.set_float32_matmul_precision("high")
                 model = torch.compile(model, dynamic=True)
 
         results: list[EvaluationResult] = []
