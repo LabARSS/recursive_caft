@@ -10,6 +10,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenize
 from core.datasets.qa_dataset import QADataset
 from core.datasets.qa_dataset_adapter import QADatasetAdapter
 from core.evaluation.continuous_batch_generator import ContinuousBatchGenerator
+from core.utils.device import DEVICE_MAP
 from core.utils.logger import logger
 
 
@@ -166,7 +167,7 @@ class Evaluator:
                 return self._load_lora_model(model_path, adapter_config)
 
         logger.info(f"Loading model from {self.config.model_path}")
-        model = AutoModelForCausalLM.from_pretrained(self.config.model_path)
+        model = AutoModelForCausalLM.from_pretrained(self.config.model_path, device_map=DEVICE_MAP)
         if not self.tokenizer:
             self.tokenizer = AutoTokenizer.from_pretrained(self.config.model_path)
         return model, self.tokenizer
@@ -182,7 +183,7 @@ class Evaluator:
             raise ValueError(f"adapter_config.json at {adapter_config} missing 'base_model_name_or_path'")
 
         logger.info(f"Loading LoRA model: base={base_model_id}, adapter={model_path}")
-        base_model = AutoModelForCausalLM.from_pretrained(base_model_id)
+        base_model = AutoModelForCausalLM.from_pretrained(base_model_id, device_map=DEVICE_MAP)
         model = PeftModel.from_pretrained(base_model, str(model_path))
         if not self.tokenizer:
             self.tokenizer = AutoTokenizer.from_pretrained(base_model_id)

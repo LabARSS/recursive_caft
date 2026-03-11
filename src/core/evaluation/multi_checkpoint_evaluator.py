@@ -154,3 +154,5 @@ class MultiCheckpointEvaluator:
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        if torch.mps.is_available():
+            torch.mps.empty_cache()
