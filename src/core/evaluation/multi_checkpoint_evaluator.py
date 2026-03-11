@@ -56,7 +56,7 @@ class MultiCheckpointEvaluator:
 
         if self.config.base_model_id:
             logger.info(f"Evaluating base model {self.config.base_model_id} as epoch 0...")
-            base_out_path = str(self._out_path / "base_model")
+            base_out_path = str(self._out_path / "base_model" / "evals")
             base_config = EvaluatorConfig(
                 model_path=self.config.base_model_id,
                 eval_dataset=self.config.eval_dataset,
@@ -78,7 +78,7 @@ class MultiCheckpointEvaluator:
 
         for ckpt_dir in checkpoint_dirs:
             ckpt_name = ckpt_dir.name
-            ckpt_out_path = str(self._out_path / ckpt_name)
+            ckpt_out_path = str(self._out_path / ckpt_name / "evals")
 
             logger.info(f"Evaluating {ckpt_name}...")
 
