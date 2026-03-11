@@ -63,7 +63,7 @@ class TestCorrectnessVsHFGenerate:
             max_new_tokens=MAX_NEW_TOKENS,
             max_batch_size=1,
         )
-        [result] = gen.generate([prompt])
+        [result] = gen.generate([prompt]).sequences
 
         expected = _hf_generate_greedy(model, tokenizer, prompt, MAX_NEW_TOKENS)
         assert result == expected, f"Mismatch:\n  got:      {result}\n  expected: {expected}"
@@ -81,7 +81,7 @@ class TestCorrectnessVsHFGenerate:
             max_new_tokens=MAX_NEW_TOKENS,
             max_batch_size=4,
         )
-        results = gen.generate(prompts)
+        results = gen.generate(prompts).sequences
 
         for i, (prompt, result) in enumerate(zip(prompts, results)):
             expected = _hf_generate_greedy(model, tokenizer, prompt, MAX_NEW_TOKENS)
@@ -102,7 +102,7 @@ class TestCorrectnessVsHFGenerate:
             max_new_tokens=MAX_NEW_TOKENS,
             max_batch_size=4,
         )
-        results = gen.generate(prompts)
+        results = gen.generate(prompts).sequences
 
         for i, (prompt, result) in enumerate(zip(prompts, results)):
             expected = _hf_generate_greedy(model, tokenizer, prompt, MAX_NEW_TOKENS)
@@ -125,7 +125,7 @@ class TestCorrectnessVsHFGenerate:
             max_new_tokens=MAX_NEW_TOKENS,
             max_batch_size=2,  # only 2 slots, 5 prompts → continuous batching
         )
-        results = gen.generate(prompts)
+        results = gen.generate(prompts).sequences
 
         for i, (prompt, result) in enumerate(zip(prompts, results)):
             expected = _hf_generate_greedy(model, tokenizer, prompt, MAX_NEW_TOKENS)
@@ -142,7 +142,7 @@ class TestCorrectnessVsHFGenerate:
             max_new_tokens=max_tokens,
             max_batch_size=1,
         )
-        [result] = gen.generate([prompt])
+        [result] = gen.generate([prompt]).sequences
 
         assert len(result) <= max_tokens, f"Generated {len(result)} tokens, max was {max_tokens}"
 
@@ -161,7 +161,7 @@ class TestCorrectnessVsHFGenerate:
             max_new_tokens=MAX_NEW_TOKENS,
             max_batch_size=2,
         )
-        results = gen.generate(prompts)
+        results = gen.generate(prompts).sequences
 
         assert len(results) == len(prompts)
         for i, (prompt, result) in enumerate(zip(prompts, results)):
@@ -182,7 +182,7 @@ class TestCorrectnessVsHFGenerate:
             max_new_tokens=MAX_NEW_TOKENS,
             max_batch_size=1,
         )
-        results = gen.generate(prompts)
+        results = gen.generate(prompts).sequences
 
         for i, (prompt, result) in enumerate(zip(prompts, results)):
             expected = _hf_generate_greedy(model, tokenizer, prompt, MAX_NEW_TOKENS)
@@ -227,7 +227,7 @@ class TestPerformance:
             max_batch_size=1,
         )
         start = time.perf_counter()
-        results_seq = gen_seq.generate(many_prompts)
+        results_seq = gen_seq.generate(many_prompts).sequences
         time_sequential = time.perf_counter() - start
 
         # Batched: batch_size=8
@@ -238,7 +238,7 @@ class TestPerformance:
             max_batch_size=8,
         )
         start = time.perf_counter()
-        results_batch = gen_batch.generate(many_prompts)
+        results_batch = gen_batch.generate(many_prompts).sequences
         time_batched = time.perf_counter() - start
 
         # Verify correctness: both must produce same results

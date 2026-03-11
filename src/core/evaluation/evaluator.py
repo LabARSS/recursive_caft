@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import torch
 from pydantic import BaseModel
 from pydraconf import PydraConfig
 from tqdm import tqdm
@@ -20,6 +21,7 @@ class GenerationConfig(BaseModel):
     temperature: float = 0.0
     top_p: float = 1.0
     top_k: int = -1
+    torch_compile: bool = True
 
 
 class EvaluatorConfig(PydraConfig):
@@ -55,6 +57,13 @@ class Evaluator:
 
         model, tokenizer = self._load_model()
         model.eval()
+
+        if self.config.generation.torch_compile:
+            if not torch.cuda.is_available():
+                logger.warning("torch_compile=True but CUDA not available — skipping compilation.")
+            else:
+                logger.info("Compiling model with torch.compile(dynamic=True)... First forward call will be slow.")
+                model = torch.compile(model, dynamic=True)
 
         results: list[EvaluationResult] = []
         for ds, cached in tqdm(zip(self._datasets, cached_results), total=len(self._datasets), desc="Datasets"):

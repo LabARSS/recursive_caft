@@ -80,6 +80,7 @@ class ContinuousBatchGenerator:
 
         self.pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
         self.eos_token_id = tokenizer.eos_token_id
+        self._is_compiled = isinstance(model, torch._dynamo.eval_frame.OptimizedModule)
 
     @torch.no_grad()
     def generate(self, prompts: list[list[int]]) -> GenerationResult:
@@ -183,6 +184,20 @@ class ContinuousBatchGenerator:
         # position_ids: each slot's actual position (prompt_len + generated so far)
         position_ids = torch.tensor([[s.seq_position] for s in slots], device=device)
 
+        # Pad batch dimension to max_batch_size to avoid recompilation when compiled
+        pad_batch = self.max_batch_size - num_slots if self._is_compiled else 0
+        if pad_batch > 0:
+            input_ids = F.pad(input_ids, (0, 0, 0, pad_batch), value=float(self.pad_token_id))
+            attn_mask = F.pad(attn_mask, (0, 0, 0, pad_batch), value=0)
+            position_ids = F.pad(position_ids, (0, 0, 0, pad_batch), value=0)
+            for layer_idx in range(len(batched_cache)):
+                batched_cache.key_cache[layer_idx] = F.pad(
+                    batched_cache.key_cache[layer_idx], (0, 0, 0, 0, 0, 0, 0, pad_batch)
+                )
+                batched_cache.value_cache[layer_idx] = F.pad(
+                    batched_cache.value_cache[layer_idx], (0, 0, 0, 0, 0, 0, 0, pad_batch)
+                )
+
         # Single forward() call
         outputs = self.model(
             input_ids=input_ids,
@@ -200,7 +215,8 @@ class ContinuousBatchGenerator:
             slot.seq_position += 1
 
         # Split updated cache back to per-slot, trim padding
-        updated_splits = outputs.past_key_values.batch_split(num_slots, split_size=1)
+        total_batch = num_slots + pad_batch
+        updated_splits = outputs.past_key_values.batch_split(total_batch, split_size=1)
         for i, slot in enumerate(slots):
             valid_len = slot_cache_lens[i] + 1  # original cache len + 1 new token
             slot.cache = _trim_cache(updated_splits[i], valid_len)
