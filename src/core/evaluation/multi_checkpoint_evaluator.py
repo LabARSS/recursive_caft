@@ -4,7 +4,7 @@ from pathlib import Path
 
 import torch
 from pydraconf import PydraConfig
-from pydantic import Field
+from transformers import PreTrainedTokenizer
 
 from core.datasets.qa_dataset_adapter import QADatasetAdapter
 from core.evaluation.evaluator import EvaluationResult, Evaluator, EvaluatorConfig, GenerationConfig
@@ -16,6 +16,7 @@ class MultiCheckpointEvaluatorConfig(PydraConfig):
     eval_dataset: QADatasetAdapter | list[QADatasetAdapter]
     base_model_id: str | None = None
     out_path: str | None = None
+    summary_filename: str = "summary.json"
     generation: GenerationConfig
 
 
@@ -26,8 +27,9 @@ class MultiCheckpointEvaluator:
     frees GPU memory before proceeding to the next.
     """
 
-    def __init__(self, config: MultiCheckpointEvaluatorConfig):
+    def __init__(self, config: MultiCheckpointEvaluatorConfig, tokenizer: PreTrainedTokenizer | None = None):
         self.config = config
+        self.tokenizer = tokenizer
 
     def _normalize_datasets(self) -> list[QADatasetAdapter]:
         if isinstance(self.config.eval_dataset, list):
@@ -61,15 +63,13 @@ class MultiCheckpointEvaluator:
                 out_path=base_out_path,
                 generation=self.config.generation,
             )
-            base_results = Evaluator(base_config).evaluate()
+            base_results = Evaluator(base_config, self.tokenizer).evaluate()
             results.append((self.config.base_model_id, base_results, 0.0))
 
             for r in base_results:
                 logger.info(f"base_model: accuracy={r.accuracy:.4f} ({r.correct}/{r.total})")
 
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            self._free_vram()
 
         for ckpt_dir in checkpoint_dirs:
             ckpt_name = ckpt_dir.name
@@ -84,19 +84,19 @@ class MultiCheckpointEvaluator:
                 generation=self.config.generation,
             )
 
-            eval_results = Evaluator(config).evaluate()
+            eval_results = Evaluator(config, self.tokenizer).evaluate()
             epoch = self._read_epoch(ckpt_dir)
             results.append((ckpt_name, eval_results, epoch))
 
             for r in eval_results:
                 logger.info(f"{ckpt_name}: accuracy={r.accuracy:.4f} ({r.correct}/{r.total})")
 
-            # Free GPU memory between checkpoints
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            self._free_vram()
 
         self._save_summary(results)
+
+        self._free_vram()
+
         return results
 
     def _read_epoch(self, ckpt_dir: Path) -> float | None:
@@ -126,7 +126,7 @@ class MultiCheckpointEvaluator:
                 for ckpt_name, eval_results, epoch in results
             ]
 
-        summary_path = self._out_path / "summary.json"
+        summary_path = self._out_path / self.config.summary_filename
         with open(summary_path, "w") as f:
             json.dump(summary, f, indent=2)
 
@@ -138,3 +138,8 @@ class MultiCheckpointEvaluator:
             return Path(self.config.out_path)
 
         return Path(self.config.checkpoints_dir)
+
+    def _free_vram(self):
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()

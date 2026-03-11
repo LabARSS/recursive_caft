@@ -3,6 +3,7 @@ from pathlib import Path
 from transformers import AutoTokenizer
 
 from core.datasets.causal_dataset_adapter import CausalDatasetAdapter
+from core.datasets.mmlu.mmlu_cot_response_dataset import MMLUCoTResponseDataset
 from core.datasets.mmlu.mmlu_single_token_response_dataset import MMLUSingleTokenResponseDataset, QADatasetConfig
 from core.datasets.qa_dataset_adapter import QADatasetAdapter
 from core.evaluation.multi_checkpoint_evaluator import (
@@ -67,6 +68,32 @@ for group in range(6):
             ],
             base_model_id=MODEL_NAME,
             generation=GenerationConfig(max_new_tokens=1, max_batch_size=64),
-        )
+        ),
+        tokenizer=tokenizer,
     )
     single_token_evaluator.evaluate_all()
+
+    cot_evaluator = MultiCheckpointEvaluator(
+        config=MultiCheckpointEvaluatorConfig(
+            checkpoints_dir=trainer.config.out_path,
+            eval_dataset=[
+                QADatasetAdapter(
+                    dataset=MMLUCoTResponseDataset(
+                        config=QADatasetConfig(
+                            path=Path(__file__)
+                            .parent.joinpath(
+                                f"../../../../data/out/splits/single_token_entropy/mmlu/llama_3b/group{j}_test.parquet"
+                            )
+                            .as_posix()
+                        ),
+                        tokenizer=tokenizer,
+                    )
+                )
+                for j in range(6)
+            ],
+            base_model_id=MODEL_NAME,
+            generation=GenerationConfig(max_new_tokens=4096, max_batch_size=4),
+        ),
+        tokenizer=tokenizer,
+    )
+    cot_evaluator.evaluate_all()
