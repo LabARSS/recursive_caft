@@ -8,6 +8,13 @@ from transformers import DynamicCache, PreTrainedModel, PreTrainedTokenizer
 
 
 @dataclass
+class GenerationResult:
+    sequences: list[list[int]]
+    num_truncated: int
+    total: int
+
+
+@dataclass
 class _Slot:
     index: int
     prompt_len: int
@@ -75,19 +82,19 @@ class ContinuousBatchGenerator:
         self.eos_token_id = tokenizer.eos_token_id
 
     @torch.no_grad()
-    def generate(self, prompts: list[list[int]]) -> list[list[int]]:
+    def generate(self, prompts: list[list[int]]) -> GenerationResult:
         """Generate responses for a list of prompts using continuous batching.
 
         Args:
             prompts: List of token ID sequences (one per sample).
 
         Returns:
-            List of generated token ID sequences (excluding prompt), same order
-            as input.
+            GenerationResult with generated sequences and truncation stats.
         """
         results: list[list[int] | None] = [None] * len(prompts)
         queue: deque[tuple[int, list[int]]] = deque((i, p) for i, p in enumerate(prompts))
         active_slots: list[_Slot | None] = [None] * self.max_batch_size
+        num_truncated = 0
         pbar = tqdm(total=len(prompts), desc="Generating")
 
         while queue or any(s is not None for s in active_slots):
@@ -111,12 +118,15 @@ class ContinuousBatchGenerator:
             for slot_idx, slot in occupied:
                 last_token = slot.generated_ids[-1]
                 if last_token == self.eos_token_id or len(slot.generated_ids) >= self.max_new_tokens:
+                    if last_token != self.eos_token_id:
+                        num_truncated += 1
                     results[slot.index] = slot.generated_ids
                     active_slots[slot_idx] = None
                     pbar.update(1)
 
         pbar.close()
-        return [r if r is not None else [] for r in results]
+        sequences = [r if r is not None else [] for r in results]
+        return GenerationResult(sequences=sequences, num_truncated=num_truncated, total=len(prompts))
 
     def _prefill(self, prompt_idx: int, prompt_ids: list[int]) -> _Slot:
         """Run the prefill forward pass to build KV cache and sample the first token."""

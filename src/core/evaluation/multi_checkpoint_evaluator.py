@@ -68,6 +68,11 @@ class MultiCheckpointEvaluator:
 
             for r in base_results:
                 logger.info(f"base_model: accuracy={r.accuracy:.4f} ({r.correct}/{r.total})")
+                if r.num_truncated > 0:
+                    pct = r.num_truncated / r.total * 100
+                    logger.warning(
+                        f"base_model: {r.num_truncated}/{r.total} ({pct:.1f}%) sequences reached max_new_tokens"
+                    )
 
             self._free_vram()
 
@@ -90,6 +95,11 @@ class MultiCheckpointEvaluator:
 
             for r in eval_results:
                 logger.info(f"{ckpt_name}: accuracy={r.accuracy:.4f} ({r.correct}/{r.total})")
+                if r.num_truncated > 0:
+                    pct = r.num_truncated / r.total * 100
+                    logger.warning(
+                        f"{ckpt_name}: {r.num_truncated}/{r.total} ({pct:.1f}%) sequences reached max_new_tokens"
+                    )
 
             self._free_vram()
 
@@ -122,6 +132,7 @@ class MultiCheckpointEvaluator:
                     "accuracy": eval_results[ds_idx].accuracy,
                     "total": eval_results[ds_idx].total,
                     "correct": eval_results[ds_idx].correct,
+                    "num_truncated": eval_results[ds_idx].num_truncated,
                 }
                 for ckpt_name, eval_results, epoch in results
             ]

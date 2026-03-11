@@ -32,6 +32,7 @@ class EvaluationResult(BaseModel):
     accuracy: float
     total: int
     correct: int
+    num_truncated: int = 0
 
 
 class Evaluator:
@@ -79,7 +80,15 @@ class Evaluator:
             top_k=self.config.generation.top_k,
         )
 
-        generated = generator.generate(prompts)
+        gen_result = generator.generate(prompts)
+        generated = gen_result.sequences
+
+        if gen_result.num_truncated > 0:
+            pct = gen_result.num_truncated / gen_result.total * 100
+            logger.warning(
+                f"Generation reached max_new_tokens ({self.config.generation.max_new_tokens}) "
+                f"for {gen_result.num_truncated}/{gen_result.total} sequences ({pct:.1f}%)"
+            )
 
         correct = 0
         total = len(prompts)
@@ -111,7 +120,9 @@ class Evaluator:
             )
 
         accuracy = correct / total if total > 0 else 0.0
-        result = EvaluationResult(accuracy=accuracy, total=total, correct=correct)
+        result = EvaluationResult(
+            accuracy=accuracy, total=total, correct=correct, num_truncated=gen_result.num_truncated
+        )
 
         logger.info(f"Evaluation complete: accuracy={accuracy:.4f} ({correct}/{total})")
 
@@ -126,7 +137,12 @@ class Evaluator:
         with open(results_path) as f:
             data = json.load(f)
         logger.info(f"Found cached results at {results_path}, skipping evaluation")
-        return EvaluationResult(accuracy=data["accuracy"], total=data["total"], correct=data["correct"])
+        return EvaluationResult(
+            accuracy=data["accuracy"],
+            total=data["total"],
+            correct=data["correct"],
+            num_truncated=data.get("num_truncated", 0),
+        )
 
     def _out_path_for(self, eval_dataset: QADatasetAdapter) -> Path:
         dataset_id = eval_dataset.dataset.dataset_id
@@ -182,6 +198,7 @@ class Evaluator:
             "accuracy": result.accuracy,
             "total": result.total,
             "correct": result.correct,
+            "num_truncated": result.num_truncated,
             "model_path": self.config.model_path,
         }
         with open(summary_path, "w") as f:
