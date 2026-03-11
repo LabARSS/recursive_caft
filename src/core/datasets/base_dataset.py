@@ -6,6 +6,7 @@ from transformers import PreTrainedTokenizer
 
 class BaseDatasetConfig(PydraConfig):
     path: str
+    dataset_id: str
 
 
 class BaseDataset[C: BaseDatasetConfig](ABC):
@@ -24,4 +25,4 @@ class BaseDataset[C: BaseDatasetConfig](ABC):
 
     @property
     def dataset_id(self) -> str:
-        return self.__class__.__name__
+        return self.config.dataset_id

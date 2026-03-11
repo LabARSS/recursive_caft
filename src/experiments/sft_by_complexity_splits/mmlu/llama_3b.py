@@ -35,7 +35,8 @@ for group in range(6):
                         .parent.joinpath(
                             f"../../../../data/out/splits/single_token_entropy/mmlu/llama_3b/group{group}_train.parquet"
                         )
-                        .as_posix()
+                        .as_posix(),
+                        dataset_id=f"mmlu_single_token_response_group{group}_train",
                     ),
                     tokenizer=tokenizer,
                 )
@@ -59,7 +60,8 @@ for group in range(6):
                             .parent.joinpath(
                                 f"../../../../data/out/splits/single_token_entropy/mmlu/llama_3b/group{j}_test.parquet"
                             )
-                            .as_posix()
+                            .as_posix(),
+                            dataset_id=f"mmlu_single_token_response_group{j}_test",
                         ),
                         tokenizer=tokenizer,
                     )
@@ -67,7 +69,7 @@ for group in range(6):
                 for j in range(6)
             ],
             base_model_id=MODEL_NAME,
-            generation=GenerationConfig(max_new_tokens=1, max_batch_size=64),
+            generation=GenerationConfig(max_new_tokens=1, max_batch_size=32),
             summary_filename="summary_cot.json",
         ),
         tokenizer=tokenizer,
@@ -85,7 +87,8 @@ for group in range(6):
                             .parent.joinpath(
                                 f"../../../../data/out/splits/single_token_entropy/mmlu/llama_3b/group{j}_test.parquet"
                             )
-                            .as_posix()
+                            .as_posix(),
+                            dataset_id=f"mmlu_cot_response_group{j}_test",
                         ),
                         tokenizer=tokenizer,
                     )
