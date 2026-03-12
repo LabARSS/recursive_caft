@@ -194,30 +194,39 @@ class ContinuousBatchGenerator:
         return GenerationResult(sequences=sequences, num_truncated=num_truncated, total=len(prompts))
 
     def _prefill(self, prompt_idx: int, prompt_ids: list[int], batch_idx: int) -> _Slot:
-        """Run the prefill forward pass to build KV cache and sample the first token."""
+        """Run the prefill forward pass to build KV cache and sample the first token.
+
+        Prefills directly into a slice of the pre-allocated cache to avoid
+        allocating a temporary DynamicCache.
+        """
         device = self.model.device
         input_ids = torch.tensor([prompt_ids], device=device)
         seq_len = len(prompt_ids)
         position_ids = torch.arange(seq_len, device=device).unsqueeze(0)
         cache_position = torch.arange(seq_len, device=device)
 
-        # Use a temporary DynamicCache for prefill (runs once per prompt)
-        tmp_cache = DynamicCache()
+        # Build a single-slot view into the pre-allocated cache so the model
+        # writes KV directly into the right batch row.
+        prefill_cache = _PreAllocatedBatchCache.__new__(_PreAllocatedBatchCache)
+        DynamicCache.__init__(prefill_cache)
+        prefill_cache._seen_tokens = 0
+        prefill_cache._active_seq_len = seq_len - 1  # update() will see seq_end = seq_len
+        prefill_cache.key_cache = [
+            self._cache.key_cache[l][batch_idx : batch_idx + 1]
+            for l in range(len(self._cache))
+        ]
+        prefill_cache.value_cache = [
+            self._cache.value_cache[l][batch_idx : batch_idx + 1]
+            for l in range(len(self._cache))
+        ]
+
         outputs = self.model(
             input_ids=input_ids,
             position_ids=position_ids,
             cache_position=cache_position,
-            past_key_values=tmp_cache,
+            past_key_values=prefill_cache,
             use_cache=True,
         )
-
-        # Copy prefill KV into the pre-allocated cache at batch_idx
-        prefill_cache = outputs.past_key_values
-        for layer_idx in range(len(prefill_cache)):
-            k = prefill_cache.key_cache[layer_idx]  # [1, H, seq_len, D]
-            v = prefill_cache.value_cache[layer_idx]
-            self._cache.key_cache[layer_idx][batch_idx, :, :seq_len, :] = k[0]
-            self._cache.value_cache[layer_idx][batch_idx, :, :seq_len, :] = v[0]
         self._valid_lens[batch_idx] = seq_len
 
         next_token = self._sample_token(outputs.logits[:, -1, :])
