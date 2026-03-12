@@ -14,10 +14,9 @@ from core.evaluation.multi_checkpoint_evaluator import (
 from core.training.lora_trainer import LoRATrainer, LoRATrainerConfig, LoRATrainingArgs
 from core.utils.logger import logger
 
-MODEL_NAME = "meta-llama/Llama-3.2-3B-Instruct"
+MODEL_NAME = "Qwen/Qwen2.5-3B-Instruct"
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
-tokenizer.pad_token = tokenizer.eos_token
 
 for group in range(6):
     logger.info(f"Training on group {group}...")
@@ -25,7 +24,7 @@ for group in range(6):
     trainer = LoRATrainer(
         config=LoRATrainerConfig(
             out_path=Path(__file__)
-            .parent.joinpath(f"../../../../artifacts/sft_by_complexity_splits/mmlu/llama_3b/group{group}")
+            .parent.joinpath(f"../../../../artifacts/sft_by_complexity_splits/mmlu/qwen_3b/group{group}")
             .as_posix(),
             model_id=MODEL_NAME,
             train_dataset=CausalDatasetAdapter(
@@ -33,7 +32,7 @@ for group in range(6):
                     config=QADatasetConfig(
                         path=Path(__file__)
                         .parent.joinpath(
-                            f"../../../../data/out/splits/single_token_entropy/mmlu/llama_3b/group{group}_train.parquet"
+                            f"../../../../data/out/splits/single_token_entropy/mmlu/qwen_3b/group{group}_train.parquet"
                         )
                         .as_posix(),
                         dataset_id=f"mmlu_single_token_response_group{group}_train",
@@ -41,7 +40,7 @@ for group in range(6):
                     tokenizer=tokenizer,
                 )
             ),
-            training_args=LoRATrainingArgs(num_train_epochs=20, per_device_train_batch_size=8),
+            training_args=LoRATrainingArgs(num_train_epochs=20, per_device_train_batch_size=32),
             save_schedule=[1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20],
         ),
         tokenizer=tokenizer,
@@ -58,7 +57,7 @@ for group in range(6):
                         config=QADatasetConfig(
                             path=Path(__file__)
                             .parent.joinpath(
-                                f"../../../../data/out/splits/single_token_entropy/mmlu/llama_3b/group{j}_test.parquet"
+                                f"../../../../data/out/splits/single_token_entropy/mmlu/qwen_3b/group{j}_test.parquet"
                             )
                             .as_posix(),
                             dataset_id=f"mmlu_single_token_response_group{j}_test",
@@ -69,7 +68,7 @@ for group in range(6):
                 for j in range(6)
             ],
             base_model_id=MODEL_NAME,
-            generation=GenerationConfig(max_new_tokens=1, max_batch_size=32),
+            generation=GenerationConfig(max_new_tokens=1, max_batch_size=64),
             summary_filename="summary_single_token.json",
         ),
         tokenizer=tokenizer,
@@ -85,7 +84,7 @@ for group in range(6):
                         config=QADatasetConfig(
                             path=Path(__file__)
                             .parent.joinpath(
-                                f"../../../../data/out/splits/single_token_entropy/mmlu/llama_3b/group{j}_test.parquet"
+                                f"../../../../data/out/splits/single_token_entropy/mmlu/qwen_3b/group{j}_test.parquet"
                             )
                             .as_posix(),
                             dataset_id=f"mmlu_cot_response_group{j}_test",
@@ -96,7 +95,7 @@ for group in range(6):
                 for j in range(6)
             ],
             base_model_id=MODEL_NAME,
-            generation=GenerationConfig(max_new_tokens=4096, max_batch_size=4),
+            generation=GenerationConfig(max_new_tokens=4096, max_batch_size=16),
             summary_filename="summary_cot.json",
         ),
         tokenizer=tokenizer,
