@@ -22,6 +22,7 @@ class GenerationConfig(BaseModel):
     top_p: float = 1.0
     top_k: int = -1
     torch_compile: bool = True
+    attn_implementation: str | None = "flash_attention_2"
 
 
 class EvaluatorConfig(PydraConfig):
@@ -179,7 +180,12 @@ class Evaluator:
                 return self._load_lora_model(model_path, adapter_config)
 
         logger.info(f"Loading model from {self.config.model_path}")
-        model = AutoModelForCausalLM.from_pretrained(self.config.model_path, device_map=DEVICE_MAP)
+        model = AutoModelForCausalLM.from_pretrained(
+            self.config.model_path,
+            device_map=DEVICE_MAP,
+            torch_dtype=torch.bfloat16,
+            attn_implementation=self.config.generation.attn_implementation,
+        )
         if not self.tokenizer:
             self.tokenizer = AutoTokenizer.from_pretrained(self.config.model_path)
         return model, self.tokenizer
@@ -195,7 +201,12 @@ class Evaluator:
             raise ValueError(f"adapter_config.json at {adapter_config} missing 'base_model_name_or_path'")
 
         logger.info(f"Loading LoRA model: base={base_model_id}, adapter={model_path}")
-        base_model = AutoModelForCausalLM.from_pretrained(base_model_id, device_map=DEVICE_MAP)
+        base_model = AutoModelForCausalLM.from_pretrained(
+            base_model_id,
+            device_map=DEVICE_MAP,
+            torch_dtype=torch.bfloat16,
+            attn_implementation=self.config.generation.attn_implementation,
+        )
         model = PeftModel.from_pretrained(base_model, str(model_path))
         if not self.tokenizer:
             self.tokenizer = AutoTokenizer.from_pretrained(base_model_id)
