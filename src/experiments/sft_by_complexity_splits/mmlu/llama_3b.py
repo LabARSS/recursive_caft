@@ -41,7 +41,7 @@ for group in range(6):
                     tokenizer=tokenizer,
                 )
             ),
-            training_args=LoRATrainingArgs(num_train_epochs=20, per_device_train_batch_size=8),
+            training_args=LoRATrainingArgs(num_train_epochs=20, per_device_train_batch_size=32),
             save_schedule=[1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20],
         ),
         tokenizer=tokenizer,
@@ -69,7 +69,7 @@ for group in range(6):
                 for j in range(6)
             ],
             base_model_id=MODEL_NAME,
-            generation=GenerationConfig(max_new_tokens=1, max_batch_size=32),
+            generation=GenerationConfig(max_new_tokens=1, max_batch_size=64),
             summary_filename="summary_single_token.json",
         ),
         tokenizer=tokenizer,
@@ -96,7 +96,7 @@ for group in range(6):
                 for j in range(6)
             ],
             base_model_id=MODEL_NAME,
-            generation=GenerationConfig(max_new_tokens=4096, max_batch_size=4),
+            generation=GenerationConfig(max_new_tokens=4096, max_batch_size=16),
             summary_filename="summary_cot.json",
         ),
         tokenizer=tokenizer,

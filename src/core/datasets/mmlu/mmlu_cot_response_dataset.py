@@ -40,7 +40,8 @@ class MMLUCoTResponseDataset(MMLUSingleTokenResponseDataset):
             .lower()
         )
 
+        correct_answer = str(row["answer"]).strip().lower()
         try:
-            return extracted_answer, self.assistant_response(row) == extracted_answer
+            return extracted_answer, correct_answer == extracted_answer
         except:
             return extracted_answer, False
