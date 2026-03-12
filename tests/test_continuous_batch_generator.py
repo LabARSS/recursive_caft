@@ -108,6 +108,33 @@ class TestCorrectnessVsHFGenerate:
             expected = _hf_generate_greedy(model, tokenizer, prompt, MAX_NEW_TOKENS)
             assert result == expected, f"Prompt {i} (len={len(prompt)}) mismatch:\n  got:      {result}\n  expected: {expected}"
 
+    def test_variable_length_prompts_batched_pairwise(self, model_and_tokenizer):
+        """Prompts with very different lengths forced into the same batch (batch_size=2).
+
+        This specifically tests that the KV cache trim logic correctly preserves
+        the new token's KV entry for the shorter slot when slots have different
+        cache lengths in the same batch.
+        """
+        model, tokenizer = model_and_tokenizer
+        prompts = [
+            tokenizer.encode("Hi"),  # very short
+            tokenizer.encode("The quick brown fox jumps over the lazy dog and then keeps running"),  # much longer
+        ]
+
+        gen = ContinuousBatchGenerator(
+            model=model,
+            tokenizer=tokenizer,
+            max_new_tokens=MAX_NEW_TOKENS,
+            max_batch_size=2,  # forces both into the same batch
+        )
+        results = gen.generate(prompts).sequences
+
+        for i, (prompt, result) in enumerate(zip(prompts, results)):
+            expected = _hf_generate_greedy(model, tokenizer, prompt, MAX_NEW_TOKENS)
+            assert result == expected, (
+                f"Prompt {i} (len={len(prompt)}) mismatch:\n  got:      {result}\n  expected: {expected}"
+            )
+
     def test_more_prompts_than_batch_size(self, model_and_tokenizer):
         """Tests continuous batching: prompts > max_batch_size forces queuing."""
         model, tokenizer = model_and_tokenizer

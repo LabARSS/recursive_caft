@@ -39,16 +39,6 @@ def _right_pad_cache(cache: DynamicCache, target_len: int) -> DynamicCache:
     return padded
 
 
-def _trim_cache(cache: DynamicCache, valid_len: int) -> DynamicCache:
-    """Trim KV cache to only the first valid_len entries along seq dim."""
-    trimmed = DynamicCache()
-    for layer_idx in range(len(cache)):
-        k = cache.key_cache[layer_idx][:, :, :valid_len, :]
-        v = cache.value_cache[layer_idx][:, :, :valid_len, :]
-        trimmed.update(k, v, layer_idx)
-    return trimmed
-
-
 class ContinuousBatchGenerator:
     """Token-by-token generation with continuous batching via model.forward().
 
@@ -214,12 +204,22 @@ class ContinuousBatchGenerator:
             slot.generated_ids.append(next_token.item())
             slot.seq_position += 1
 
-        # Split updated cache back to per-slot, trim padding
+        # Split updated cache back to per-slot, keeping original valid entries + new token
         total_batch = num_slots + pad_batch
         updated_splits = outputs.past_key_values.batch_split(total_batch, split_size=1)
         for i, slot in enumerate(slots):
-            valid_len = slot_cache_lens[i] + 1  # original cache len + 1 new token
-            slot.cache = _trim_cache(updated_splits[i], valid_len)
+            split_cache = updated_splits[i]
+            rebuilt = DynamicCache()
+            for layer_idx in range(len(split_cache)):
+                k = split_cache.key_cache[layer_idx]
+                v = split_cache.value_cache[layer_idx]
+                # DynamicCache.update() appends new KV at the end (position max_cache_len),
+                # not at slot's actual cache length. Keep [0:slot_cache_len] (valid original)
+                # and [max_cache_len:max_cache_len+1] (the new token), skip padding in between.
+                k_new = torch.cat([k[:, :, :slot_cache_lens[i], :], k[:, :, max_cache_len:max_cache_len + 1, :]], dim=2)
+                v_new = torch.cat([v[:, :, :slot_cache_lens[i], :], v[:, :, max_cache_len:max_cache_len + 1, :]], dim=2)
+                rebuilt.update(k_new, v_new, layer_idx)
+            slot.cache = rebuilt
 
     def _sample_token(self, logits: torch.Tensor) -> torch.Tensor:
         """Sample a single token from logits of shape [1, vocab_size]."""
