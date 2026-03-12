@@ -1,10 +1,11 @@
 from collections import deque
 from dataclasses import dataclass, field
+from typing import Optional
 
 import torch
-import torch.nn.functional as F
 from tqdm import tqdm
 from transformers import DynamicCache, PreTrainedModel, PreTrainedTokenizer
+from transformers.cache_utils import _static_cache_update
 
 
 @dataclass
@@ -18,36 +19,87 @@ class GenerationResult:
 class _Slot:
     index: int
     prompt_len: int
+    batch_idx: int
     generated_ids: list[int] = field(default_factory=list)
-    cache: DynamicCache = field(default_factory=DynamicCache)
     seq_position: int = 0  # total tokens seen = prompt_len + len(generated_ids)
 
 
-def _right_pad_cache(cache: DynamicCache, target_len: int) -> DynamicCache:
-    """Pad KV cache tensors along seq dim (dim=-2) with zeros to target_len."""
-    current_len = cache.get_seq_length()
-    if current_len == target_len:
-        return cache
-    pad_len = target_len - current_len
-    padded = DynamicCache()
-    for layer_idx in range(len(cache)):
-        k = cache.key_cache[layer_idx]  # [1, H, T, D]
-        v = cache.value_cache[layer_idx]
-        k_pad = F.pad(k, (0, 0, 0, pad_len))  # pad dim=-2
-        v_pad = F.pad(v, (0, 0, 0, pad_len))
-        padded.update(k_pad, v_pad, layer_idx)
-    return padded
+class _PreAllocatedBatchCache(DynamicCache):
+    """Pre-allocated KV cache that updates in-place via index_copy_.
+
+    Subclasses DynamicCache so models take the DynamicCache code path in
+    _update_causal_mask (target_length = attention_mask.shape[-1]).
+    """
+
+    def __init__(
+        self,
+        num_layers: int,
+        num_kv_heads: int,
+        head_dim: int,
+        max_batch_size: int,
+        max_cache_len: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> None:
+        super().__init__()
+        self._seen_tokens = 0
+        self._active_seq_len = 0
+        cache_shape = (max_batch_size, num_kv_heads, max_cache_len, head_dim)
+        for _ in range(num_layers):
+            k = torch.zeros(cache_shape, dtype=dtype, device=device)
+            v = torch.zeros(cache_shape, dtype=dtype, device=device)
+            torch._dynamo.mark_static_address(k)
+            torch._dynamo.mark_static_address(v)
+            self.key_cache.append(k)
+            self.value_cache.append(v)
+
+    def update(
+        self,
+        key_states: torch.Tensor,
+        value_states: torch.Tensor,
+        layer_idx: int,
+        cache_kwargs: Optional[dict] = None,
+    ):
+        if layer_idx == 0:
+            self._seen_tokens += key_states.shape[-2]
+        cache_position = cache_kwargs.get("cache_position") if cache_kwargs else None
+        _static_cache_update(
+            self.key_cache[layer_idx],
+            self.value_cache[layer_idx],
+            key_states,
+            value_states,
+            cache_position,
+        )
+        # Return a view trimmed to _active_seq_len + 1 so attention only sees
+        # valid positions, not the full pre-allocated length.
+        seq_end = self._active_seq_len + 1
+        return (
+            self.key_cache[layer_idx][:, :, :seq_end, :],
+            self.value_cache[layer_idx][:, :, :seq_end, :],
+        )
+
+    def get_seq_length(self, layer_idx: Optional[int] = 0) -> int:
+        return self._active_seq_len
+
+    def get_max_cache_shape(self):
+        return None
+
+    def reset_slot(self, slot_idx: int) -> None:
+        for layer_idx in range(len(self)):
+            self.key_cache[layer_idx][slot_idx].zero_()
+            self.value_cache[layer_idx][slot_idx].zero_()
 
 
 class ContinuousBatchGenerator:
     """Token-by-token generation with continuous batching via model.forward().
 
-    Maintains a pool of active slots. Empty slots are filled from a queue of
-    pending prompts. Each slot holds its own DynamicCache (batch_size=1).
+    Maintains a pool of active slots backed by a single pre-allocated KV cache.
+    Empty slots are filled from a queue of pending prompts.
 
     Prefill runs individually per prompt (no padding waste). Decode batches
-    all active slots into a single forward() call by padding KV caches to
-    equal length and using an attention mask to ignore padded positions.
+    all active slots into a single forward() call using an attention mask to
+    ignore padded positions. The KV cache is updated in-place with zero
+    tensor allocations per decode step.
     """
 
     def __init__(
@@ -70,7 +122,23 @@ class ContinuousBatchGenerator:
 
         self.pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
         self.eos_token_id = tokenizer.eos_token_id
-        self._is_compiled = isinstance(model, torch._dynamo.eval_frame.OptimizedModule)
+
+    def _init_cache(self, max_seq_len: int) -> _PreAllocatedBatchCache:
+        config = self.model.config
+        num_layers = config.num_hidden_layers
+        num_kv_heads = getattr(config, "num_key_value_heads", None) or config.num_attention_heads
+        head_dim = getattr(config, "head_dim", None) or config.hidden_size // config.num_attention_heads
+        device = self.model.device
+        dtype = self.model.dtype
+        return _PreAllocatedBatchCache(
+            num_layers=num_layers,
+            num_kv_heads=num_kv_heads,
+            head_dim=head_dim,
+            max_batch_size=self.max_batch_size,
+            max_cache_len=max_seq_len,
+            device=device,
+            dtype=dtype,
+        )
 
     @torch.no_grad()
     def generate(self, prompts: list[list[int]]) -> GenerationResult:
@@ -88,13 +156,19 @@ class ContinuousBatchGenerator:
         num_truncated = 0
         pbar = tqdm(total=len(prompts), desc="Generating")
 
+        # Pre-allocate the batched KV cache
+        max_prompt_len = max(len(p) for p in prompts)
+        max_seq_len = max_prompt_len + self.max_new_tokens
+        self._cache = self._init_cache(max_seq_len)
+        self._valid_lens = [0] * self.max_batch_size
+
         while queue or any(s is not None for s in active_slots):
             # FILL: prefill empty slots with new prompts (batch_size=1 each)
             for slot_idx in range(self.max_batch_size):
                 if active_slots[slot_idx] is not None or not queue:
                     continue
                 prompt_idx, prompt_ids = queue.popleft()
-                active_slots[slot_idx] = self._prefill(prompt_idx, prompt_ids)
+                active_slots[slot_idx] = self._prefill(prompt_idx, prompt_ids, slot_idx)
 
             # Collect occupied slots
             occupied = [(i, s) for i, s in enumerate(active_slots) if s is not None]
@@ -119,107 +193,107 @@ class ContinuousBatchGenerator:
         sequences = [r if r is not None else [] for r in results]
         return GenerationResult(sequences=sequences, num_truncated=num_truncated, total=len(prompts))
 
-    def _prefill(self, prompt_idx: int, prompt_ids: list[int]) -> _Slot:
+    def _prefill(self, prompt_idx: int, prompt_ids: list[int], batch_idx: int) -> _Slot:
         """Run the prefill forward pass to build KV cache and sample the first token."""
         device = self.model.device
         input_ids = torch.tensor([prompt_ids], device=device)
         seq_len = len(prompt_ids)
         position_ids = torch.arange(seq_len, device=device).unsqueeze(0)
         cache_position = torch.arange(seq_len, device=device)
-        cache = DynamicCache()
 
+        # Use a temporary DynamicCache for prefill (runs once per prompt)
+        tmp_cache = DynamicCache()
         outputs = self.model(
             input_ids=input_ids,
             position_ids=position_ids,
             cache_position=cache_position,
-            past_key_values=cache,
+            past_key_values=tmp_cache,
             use_cache=True,
         )
+
+        # Copy prefill KV into the pre-allocated cache at batch_idx
+        prefill_cache = outputs.past_key_values
+        for layer_idx in range(len(prefill_cache)):
+            k = prefill_cache.key_cache[layer_idx]  # [1, H, seq_len, D]
+            v = prefill_cache.value_cache[layer_idx]
+            self._cache.key_cache[layer_idx][batch_idx, :, :seq_len, :] = k[0]
+            self._cache.value_cache[layer_idx][batch_idx, :, :seq_len, :] = v[0]
+        self._valid_lens[batch_idx] = seq_len
 
         next_token = self._sample_token(outputs.logits[:, -1, :])
 
         return _Slot(
             index=prompt_idx,
             prompt_len=seq_len,
+            batch_idx=batch_idx,
             generated_ids=[next_token.item()],
-            cache=outputs.past_key_values,
             seq_position=seq_len + 1,
         )
 
     def _batched_decode(self, slots: list[_Slot]) -> None:
-        """Run a single batched decode step for all active slots."""
+        """Run a single batched decode step for all active slots.
+
+        Uses the pre-allocated cache — zero tensor allocations per step.
+        """
         device = self.model.device
-        num_slots = len(slots)
 
-        # Cache lengths before padding (needed for trim after forward)
-        slot_cache_lens = [s.cache.get_seq_length() for s in slots]
-        max_cache_len = max(slot_cache_lens)
+        # Determine shared write position
+        max_active_len = max(self._valid_lens[s.batch_idx] for s in slots)
+        self._cache._active_seq_len = max_active_len
 
-        # Pad each slot's KV cache to max_cache_len, then merge into batched cache
-        padded_caches = [_right_pad_cache(s.cache, max_cache_len) for s in slots]
-        batched_cache = DynamicCache.from_batch_splits(padded_caches)
+        # Build input_ids [max_batch_size, 1]
+        input_ids = torch.full(
+            (self.max_batch_size, 1), self.pad_token_id, dtype=torch.long, device=device
+        )
+        for slot in slots:
+            input_ids[slot.batch_idx, 0] = slot.generated_ids[-1]
 
-        # input_ids: last generated token per slot [num_slots, 1]
-        input_ids = torch.tensor([[s.generated_ids[-1]] for s in slots], device=device)
+        # Build attention_mask [max_batch_size, max_active_len + 1]
+        attn_mask = torch.zeros(
+            self.max_batch_size, max_active_len + 1, dtype=torch.long, device=device
+        )
+        for slot in slots:
+            valid_len = self._valid_lens[slot.batch_idx]
+            attn_mask[slot.batch_idx, :valid_len] = 1  # valid cached positions
+            attn_mask[slot.batch_idx, max_active_len] = 1  # the new token position
 
-        # attention_mask: [num_slots, max_cache_len + 1] (+1 for the new token)
-        attn_mask = torch.zeros(num_slots, max_cache_len + 1, dtype=torch.long, device=device)
-        for i, slot in enumerate(slots):
-            attn_mask[i, : slot_cache_lens[i]] = 1  # valid cached positions
-            attn_mask[i, max_cache_len] = 1  # the new token position (appended at end)
+        # cache_position: shared write position
+        cache_position = torch.tensor([max_active_len], device=device)
 
-        # cache_position: shared across batch, points to where the new KV is appended
-        cache_position = torch.tensor([max_cache_len], device=device)
+        # position_ids [max_batch_size, 1]
+        position_ids = torch.zeros(self.max_batch_size, 1, dtype=torch.long, device=device)
+        for slot in slots:
+            position_ids[slot.batch_idx, 0] = slot.seq_position
 
-        # position_ids: each slot's actual position (prompt_len + generated so far)
-        position_ids = torch.tensor([[s.seq_position] for s in slots], device=device)
-
-        # Pad batch dimension to max_batch_size to avoid recompilation when compiled
-        pad_batch = self.max_batch_size - num_slots if self._is_compiled else 0
-        if pad_batch > 0:
-            input_ids = F.pad(input_ids, (0, 0, 0, pad_batch), value=float(self.pad_token_id))
-            attn_mask = F.pad(attn_mask, (0, 0, 0, pad_batch), value=0)
-            position_ids = F.pad(position_ids, (0, 0, 0, pad_batch), value=0)
-            for layer_idx in range(len(batched_cache)):
-                batched_cache.key_cache[layer_idx] = F.pad(
-                    batched_cache.key_cache[layer_idx], (0, 0, 0, 0, 0, 0, 0, pad_batch)
-                )
-                batched_cache.value_cache[layer_idx] = F.pad(
-                    batched_cache.value_cache[layer_idx], (0, 0, 0, 0, 0, 0, 0, pad_batch)
-                )
-
-        # Single forward() call
+        # Single forward() call — model writes new KV in-place at cache_position
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attn_mask,
             position_ids=position_ids,
             cache_position=cache_position,
-            past_key_values=batched_cache,
+            past_key_values=self._cache,
             use_cache=True,
         )
 
         # Sample next token per slot
-        for i, slot in enumerate(slots):
-            next_token = self._sample_token(outputs.logits[i : i + 1, -1, :])
+        for slot in slots:
+            next_token = self._sample_token(outputs.logits[slot.batch_idx : slot.batch_idx + 1, -1, :])
             slot.generated_ids.append(next_token.item())
             slot.seq_position += 1
 
-        # Split updated cache back to per-slot, keeping original valid entries + new token
-        total_batch = num_slots + pad_batch
-        updated_splits = outputs.past_key_values.batch_split(total_batch, split_size=1)
-        for i, slot in enumerate(slots):
-            split_cache = updated_splits[i]
-            rebuilt = DynamicCache()
-            for layer_idx in range(len(split_cache)):
-                k = split_cache.key_cache[layer_idx]
-                v = split_cache.value_cache[layer_idx]
-                # DynamicCache.update() appends new KV at the end (position max_cache_len),
-                # not at slot's actual cache length. Keep [0:slot_cache_len] (valid original)
-                # and [max_cache_len:max_cache_len+1] (the new token), skip padding in between.
-                k_new = torch.cat([k[:, :, :slot_cache_lens[i], :], k[:, :, max_cache_len:max_cache_len + 1, :]], dim=2)
-                v_new = torch.cat([v[:, :, :slot_cache_lens[i], :], v[:, :, max_cache_len:max_cache_len + 1, :]], dim=2)
-                rebuilt.update(k_new, v_new, layer_idx)
-            slot.cache = rebuilt
+        # Compact: move new KV from shared write position to each slot's actual position
+        num_layers = len(self._cache)
+        for slot in slots:
+            valid_len = self._valid_lens[slot.batch_idx]
+            if valid_len < max_active_len:
+                for layer_idx in range(num_layers):
+                    self._cache.key_cache[layer_idx][slot.batch_idx, :, valid_len, :] = (
+                        self._cache.key_cache[layer_idx][slot.batch_idx, :, max_active_len, :]
+                    )
+                    self._cache.value_cache[layer_idx][slot.batch_idx, :, valid_len, :] = (
+                        self._cache.value_cache[layer_idx][slot.batch_idx, :, max_active_len, :]
+                    )
+            self._valid_lens[slot.batch_idx] = valid_len + 1
 
     def _sample_token(self, logits: torch.Tensor) -> torch.Tensor:
         """Sample a single token from logits of shape [1, vocab_size]."""
