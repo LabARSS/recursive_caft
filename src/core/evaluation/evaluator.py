@@ -79,7 +79,9 @@ class Evaluator:
         ds = eval_dataset.process_dataset()
 
         prompts = [row["input_ids"] for row in ds]
-        logger.info(f"Evaluating {len(prompts)} samples with model from {self.config.model_path}")
+        logger.info(
+            f"Evaluating {len(prompts)} samples with model from {self.config.model_path} for dataset {eval_dataset.dataset.dataset_id}..."
+        )
 
         generator = ContinuousBatchGenerator(
             model=model,
