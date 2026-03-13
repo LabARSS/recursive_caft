@@ -276,8 +276,13 @@ class ContinuousBatchGenerator:
 
         Returns the number of truncated sequences.
         """
+        self._effective_batch_size = self.max_batch_size
         effective_bs = min(len(input_queue), self.max_batch_size)
-        self._effective_batch_size = effective_bs
+        if effective_bs != self._effective_batch_size:
+            pbar.write(
+                f"[perf] Adjusting batch size: {self._effective_batch_size} → {effective_bs}. torch.compile will take time."
+            )
+            self._effective_batch_size = effective_bs
         self._cache = self._init_cache(max_cache_len, effective_bs)
         self._valid_lens = [0] * effective_bs
         active_slots: list[_Slot | None] = [None] * effective_bs
