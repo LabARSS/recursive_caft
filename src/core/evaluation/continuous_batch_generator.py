@@ -1,3 +1,4 @@
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
@@ -6,6 +7,8 @@ import torch
 from tqdm import tqdm
 from transformers import DynamicCache, PreTrainedModel, PreTrainedTokenizer
 from transformers.cache_utils import _static_cache_update
+
+from core.utils.logger import logger
 
 
 @dataclass
@@ -158,6 +161,10 @@ class ContinuousBatchGenerator:
         self._cache = self._init_cache(max_seq_len)
         self._valid_lens = [0] * self.max_batch_size
 
+        step = 0
+        draining = False
+        step_times: list[float] = []
+
         while queue or any(s is not None for s in active_slots):
             # FILL: prefill empty slots with new prompts (batch_size=1 each)
             for slot_idx in range(self.max_batch_size):
@@ -171,9 +178,37 @@ class ContinuousBatchGenerator:
             if not occupied:
                 break
 
+            if not queue and not draining:
+                draining = True
+                logger.info(
+                    f"[perf] Entering drain phase at step {step}, "
+                    f"active_slots={len(occupied)}, "
+                    f"completed={sum(1 for r in results if r is not None)}/{len(prompts)}"
+                )
+
             # BATCHED DECODE: single forward() call for all active slots
             slots_only = [s for _, s in occupied]
+            max_active_len = max(self._valid_lens[s.batch_idx] for s in slots_only)
+
+            step_start = time.perf_counter()
             self._batched_decode(slots_only)
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            step_elapsed = time.perf_counter() - step_start
+            step_times.append(step_elapsed)
+
+            # Log every 50 steps during drain, or every 200 steps otherwise
+            log_interval = 50 if draining else 200
+            if step % log_interval == 0:
+                avg_recent = sum(step_times[-10:]) / len(step_times[-10:])
+                logger.info(
+                    f"[perf] step={step} active_slots={len(occupied)} "
+                    f"max_active_len={max_active_len} "
+                    f"step_time={step_elapsed:.4f}s avg_last10={avg_recent:.4f}s "
+                    f"queue={len(queue)} draining={draining}"
+                )
+
+            step += 1
 
             # RETIRE: check for completed sequences
             for slot_idx, slot in occupied:
@@ -182,9 +217,19 @@ class ContinuousBatchGenerator:
                     if last_token != self.eos_token_id:
                         num_truncated += 1
                     results[slot.index] = slot.generated_ids
+                    gen_len = len(slot.generated_ids)
+                    logger.info(
+                        f"[perf] Prompt {slot.index} completed: "
+                        f"gen_len={gen_len} prompt_len={slot.prompt_len} "
+                        f"draining={draining} active_slots={len(occupied)} step={step}"
+                    )
                     active_slots[slot_idx] = None
                     pbar.update(1)
 
+        logger.info(
+            f"[perf] Generation done: {len(step_times)} decode steps, "
+            f"avg_step={sum(step_times)/len(step_times):.4f}s"
+        )
         pbar.close()
         sequences = [r if r is not None else [] for r in results]
         return GenerationResult(sequences=sequences, num_truncated=num_truncated, total=len(prompts))
