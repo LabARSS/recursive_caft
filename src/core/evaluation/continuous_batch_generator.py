@@ -342,6 +342,7 @@ class ContinuousBatchGenerator:
 
         return num_truncated
 
+    @torch.compiler.disable
     def _prefill(
         self,
         prompt_idx: int,
