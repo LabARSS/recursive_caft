@@ -67,7 +67,7 @@ class Evaluator:
                 torch.set_float32_matmul_precision("high")
                 torch._dynamo.config.allow_unspec_int_on_nn_module = True
                 torch._dynamo.config.capture_scalar_outputs = True
-                torch._dynamo.config.cache_size_limit = 16
+                torch._dynamo.config.cache_size_limit = 32
                 model = torch.compile(model, dynamic=True)
 
         results: list[EvaluationResult] = []

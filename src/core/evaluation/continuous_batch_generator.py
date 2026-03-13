@@ -8,8 +8,6 @@ from tqdm import tqdm
 from transformers import DynamicCache, PreTrainedModel, PreTrainedTokenizer
 from transformers.cache_utils import _static_cache_update
 
-from core.utils.logger import logger
-
 
 @dataclass
 class GenerationResult:
@@ -223,7 +221,7 @@ class ContinuousBatchGenerator:
         phase = 0
         threshold = min(self._PHASE_STEP, self.max_new_tokens)
 
-        logger.info(
+        pbar.write(
             f"[phase] Starting grouped generation: {len(input_queue)} prompts, "
             f"phase_step={self._PHASE_STEP} max={self.max_new_tokens}"
         )
@@ -262,7 +260,7 @@ class ContinuousBatchGenerator:
             max_prompt = max(max_prompt, len(ps.prompt_ids))
         promoted_queue.clear()
         cache_len = max_prompt + gen_threshold
-        logger.info(f"[phase] Starting phase: {len(input_queue)} sequences, cache_len={cache_len}")
+        pbar.write(f"[phase] Starting phase: {len(input_queue)} sequences, cache_len={cache_len}")
         return self._run_phase(input_queue, results, gen_threshold, promote_queue, pbar, cache_len)
 
     def _run_phase(
@@ -339,7 +337,7 @@ class ContinuousBatchGenerator:
                     active_slots[slot_idx] = None
 
         if step > 0:
-            logger.info(f"[perf] Phase done: {step} decode steps, avg_step={step_time_sum / step:.4f}s")
+            pbar.write(f"[perf] Phase done: {step} decode steps, avg_step={step_time_sum / step:.4f}s")
 
         return num_truncated
 
