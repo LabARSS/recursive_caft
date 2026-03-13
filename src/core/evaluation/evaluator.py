@@ -63,12 +63,9 @@ class Evaluator:
             if not torch.cuda.is_available():
                 logger.warning("torch_compile=True but CUDA not available — skipping compilation.")
             else:
-                logger.info("Compiling model with torch.compile(dynamic=True)... First forward call will be slow.")
+                logger.info("Compiling model with torch.compile... First forward call will be slow.")
                 torch.set_float32_matmul_precision("high")
-                torch._dynamo.config.allow_unspec_int_on_nn_module = True
-                torch._dynamo.config.capture_scalar_outputs = True
-                torch._dynamo.config.cache_size_limit = 32
-                model = torch.compile(model, dynamic=True)
+                model = torch.compile(model)
 
         results: list[EvaluationResult] = []
         for ds, cached in tqdm(zip(self._datasets, cached_results), total=len(self._datasets), desc="Datasets"):
