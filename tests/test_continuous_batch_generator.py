@@ -246,6 +246,38 @@ class TestCorrectnessVsHFGenerate:
             expected = _hf_generate_greedy(model, tokenizer, prompt, MAX_NEW_TOKENS)
             assert result == expected
 
+    def test_group_scheduling_matches_flat(self, model_and_tokenizer):
+        """Phase-based group scheduling must produce identical results to flat generation.
+
+        With max_new_tokens=20, t1=5 and t2=10. Sequences generating more than 5
+        tokens get promoted to the medium phase, >10 to slow. Under greedy decoding,
+        results must be identical regardless of phase transitions.
+        """
+        model, tokenizer = model_and_tokenizer
+        prompts = [
+            tokenizer.encode("Hello world"),
+            tokenizer.encode("The quick brown fox jumps over the lazy dog and then"),
+            tokenizer.encode("Once"),
+            tokenizer.encode("A long time ago in a galaxy far far away"),
+            tokenizer.encode("Hi"),
+        ]
+
+        gen = ContinuousBatchGenerator(
+            model=model,
+            tokenizer=tokenizer,
+            max_new_tokens=MAX_NEW_TOKENS,
+            max_batch_size=2,  # small batch forces queuing + phase interrupts
+            group_scheduling=True,  # force on despite small max_new_tokens
+        )
+        results = gen.generate(prompts).sequences
+
+        for i, (prompt, result) in enumerate(zip(prompts, results)):
+            expected = _hf_generate_greedy(model, tokenizer, prompt, MAX_NEW_TOKENS)
+            assert result == expected, (
+                f"Prompt {i} (len={len(prompt)}) mismatch with group scheduling:\n"
+                f"  got:      {result}\n  expected: {expected}"
+            )
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Performance tests
