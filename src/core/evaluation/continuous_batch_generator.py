@@ -201,6 +201,8 @@ class ContinuousBatchGenerator:
         sequences = [r if r is not None else [] for r in results]
         return GenerationResult(sequences=sequences, num_truncated=num_truncated, total=len(prompts))
 
+    _PHASE_STEP = 1024  # max tokens generated per phase
+
     def _generate_grouped(
         self,
         prompts: list[list[int]],
@@ -208,33 +210,40 @@ class ContinuousBatchGenerator:
         pbar: tqdm,
         max_prompt_len: int,
     ) -> int:
-        """Phase-based group scheduling with 3 phases (sequential).
+        """Phase-based group scheduling with dynamic phases (sequential).
 
-        Thresholds: 1/8, 1/4, 1 of max_new_tokens.
-        Each phase uses a smaller cache, keeping max_active_len low.
+        Each phase generates up to _PHASE_STEP tokens. Sequences that haven't
+        finished are promoted to the next phase with a fresh, tighter cache.
 
         Returns total num_truncated.
         """
-        t1 = self.max_new_tokens // 8
-        t2 = self.max_new_tokens // 4
-
         input_queue: deque[tuple[int, list[int], list[int]]] = deque((i, p, p) for i, p in enumerate(prompts))
-        q2: deque[_PromotedSequence] = deque()
-        q3: deque[_PromotedSequence] = deque()
+        promote_queue: deque[_PromotedSequence] = deque()
+        trunc = 0
+        phase = 0
+        threshold = min(self._PHASE_STEP, self.max_new_tokens)
 
         logger.info(
             f"[phase] Starting grouped generation: {len(input_queue)} prompts, "
-            f"thresholds t1={t1} t2={t2} max={self.max_new_tokens}"
+            f"phase_step={self._PHASE_STEP} max={self.max_new_tokens}"
         )
 
-        # Phase 1: fastest (up to 1/8)
-        trunc = self._run_phase(input_queue, results, t1, q2, pbar, max_prompt_len + t1)
+        # First phase uses input_queue directly
+        trunc += self._run_phase(
+            input_queue, results, threshold, promote_queue, pbar, max_prompt_len + threshold
+        )
+        phase += 1
 
-        # Phase 2: fast (up to 1/4)
-        trunc += self._run_promoted_phase(q2, results, t2, q3, pbar)
-
-        # Phase 3: slow (up to max)
-        trunc += self._run_promoted_phase(q3, results, self.max_new_tokens, None, pbar)
+        # Subsequent phases process promoted sequences
+        while promote_queue:
+            threshold = min(self._PHASE_STEP * (phase + 1), self.max_new_tokens)
+            next_queue: deque[_PromotedSequence] = deque()
+            is_last = threshold >= self.max_new_tokens
+            trunc += self._run_promoted_phase(
+                promote_queue, results, threshold, None if is_last else next_queue, pbar
+            )
+            promote_queue = next_queue
+            phase += 1
 
         return trunc
 
