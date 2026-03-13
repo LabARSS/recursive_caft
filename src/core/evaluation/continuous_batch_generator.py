@@ -44,14 +44,11 @@ class _PreAllocatedBatchCache(DynamicCache):
         super().__init__()
         self._seen_tokens = 0
         self._active_seq_len = 0
-        cache_shape = (max_batch_size, num_kv_heads, max_cache_len, head_dim)
-        for _ in range(num_layers):
-            k = torch.zeros(cache_shape, dtype=dtype, device=device)
-            v = torch.zeros(cache_shape, dtype=dtype, device=device)
-            torch._dynamo.mark_static_address(k)
-            torch._dynamo.mark_static_address(v)
-            self.key_cache.append(k)
-            self.value_cache.append(v)
+        cache_shape = (num_layers, max_batch_size, num_kv_heads, max_cache_len, head_dim)
+        self.key_cache = torch.zeros(cache_shape, dtype=dtype, device=device)
+        self.value_cache = torch.zeros(cache_shape, dtype=dtype, device=device)
+        torch._dynamo.mark_static_address(self.key_cache)
+        torch._dynamo.mark_static_address(self.value_cache)
 
     def update(
         self,
@@ -85,9 +82,8 @@ class _PreAllocatedBatchCache(DynamicCache):
         return None
 
     def reset_slot(self, slot_idx: int) -> None:
-        for layer_idx in range(len(self)):
-            self.key_cache[layer_idx][slot_idx].zero_()
-            self.value_cache[layer_idx][slot_idx].zero_()
+        self.key_cache[:, slot_idx].zero_()
+        self.value_cache[:, slot_idx].zero_()
 
 
 class ContinuousBatchGenerator:
@@ -209,13 +205,12 @@ class ContinuousBatchGenerator:
             if active_slots[read] is not None:
                 if read != write:
                     slot = active_slots[read]
-                    for l in range(len(self._cache)):
-                        self._cache.key_cache[l][write].copy_(
-                            self._cache.key_cache[l][slot.batch_idx]
-                        )
-                        self._cache.value_cache[l][write].copy_(
-                            self._cache.value_cache[l][slot.batch_idx]
-                        )
+                    self._cache.key_cache[:, write].copy_(
+                        self._cache.key_cache[:, slot.batch_idx]
+                    )
+                    self._cache.value_cache[:, write].copy_(
+                        self._cache.value_cache[:, slot.batch_idx]
+                    )
                     self._valid_lens[write] = self._valid_lens[slot.batch_idx]
                     slot.batch_idx = write
                     active_slots[write] = slot
@@ -240,14 +235,8 @@ class ContinuousBatchGenerator:
         DynamicCache.__init__(prefill_cache)
         prefill_cache._seen_tokens = 0
         prefill_cache._active_seq_len = seq_len - 1  # update() will see seq_end = seq_len
-        prefill_cache.key_cache = [
-            self._cache.key_cache[l][batch_idx : batch_idx + 1]
-            for l in range(len(self._cache))
-        ]
-        prefill_cache.value_cache = [
-            self._cache.value_cache[l][batch_idx : batch_idx + 1]
-            for l in range(len(self._cache))
-        ]
+        prefill_cache.key_cache = self._cache.key_cache[:, batch_idx : batch_idx + 1]
+        prefill_cache.value_cache = self._cache.value_cache[:, batch_idx : batch_idx + 1]
 
         outputs = self.model(
             input_ids=input_ids,
@@ -309,13 +298,12 @@ class ContinuousBatchGenerator:
         # Build a cache view trimmed to num_active batch rows (zero-copy
         # slices since batch dim is first and contiguous). In-place writes
         # by the model update the original pre-allocated cache.
-        num_layers = len(self._cache)
         decode_cache = _PreAllocatedBatchCache.__new__(_PreAllocatedBatchCache)
         DynamicCache.__init__(decode_cache)
         decode_cache._seen_tokens = self._cache._seen_tokens
         decode_cache._active_seq_len = max_active_len
-        decode_cache.key_cache = [self._cache.key_cache[l][:num_active] for l in range(num_layers)]
-        decode_cache.value_cache = [self._cache.value_cache[l][:num_active] for l in range(num_layers)]
+        decode_cache.key_cache = self._cache.key_cache[:, :num_active]
+        decode_cache.value_cache = self._cache.value_cache[:, :num_active]
 
         # Single forward() call — model writes new KV in-place at cache_position
         outputs = self.model(
@@ -334,17 +322,15 @@ class ContinuousBatchGenerator:
             slot.seq_position += 1
 
         # Compact: move new KV from shared write position to each slot's actual position
-        num_layers = len(self._cache)
         for slot in slots:
             valid_len = self._valid_lens[slot.batch_idx]
             if valid_len < max_active_len:
-                for layer_idx in range(num_layers):
-                    self._cache.key_cache[layer_idx][slot.batch_idx, :, valid_len, :] = (
-                        self._cache.key_cache[layer_idx][slot.batch_idx, :, max_active_len, :]
-                    )
-                    self._cache.value_cache[layer_idx][slot.batch_idx, :, valid_len, :] = (
-                        self._cache.value_cache[layer_idx][slot.batch_idx, :, max_active_len, :]
-                    )
+                self._cache.key_cache[:, slot.batch_idx, :, valid_len, :] = (
+                    self._cache.key_cache[:, slot.batch_idx, :, max_active_len, :]
+                )
+                self._cache.value_cache[:, slot.batch_idx, :, valid_len, :] = (
+                    self._cache.value_cache[:, slot.batch_idx, :, max_active_len, :]
+                )
             self._valid_lens[slot.batch_idx] = valid_len + 1
 
     def _sample_token(self, logits: torch.Tensor) -> torch.Tensor:
