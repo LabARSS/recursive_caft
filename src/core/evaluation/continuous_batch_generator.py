@@ -49,11 +49,14 @@ class _PreAllocatedBatchCache(DynamicCache):
         self._active_seq_len = 0
         self._per_row_cache_positions: Optional[torch.Tensor] = None
         self._batch_indices = torch.arange(max_batch_size, device=device)
-        cache_shape = (num_layers, max_batch_size, num_kv_heads, max_cache_len, head_dim)
-        self.key_cache = torch.zeros(cache_shape, dtype=dtype, device=device)
-        self.value_cache = torch.zeros(cache_shape, dtype=dtype, device=device)
-        torch._dynamo.mark_static_address(self.key_cache)
-        torch._dynamo.mark_static_address(self.value_cache)
+        cache_shape = (max_batch_size, num_kv_heads, max_cache_len, head_dim)
+        for _ in range(num_layers):
+            k = torch.zeros(cache_shape, dtype=dtype, device=device)
+            v = torch.zeros(cache_shape, dtype=dtype, device=device)
+            torch._dynamo.mark_static_address(k)
+            torch._dynamo.mark_static_address(v)
+            self.key_cache.append(k)
+            self.value_cache.append(v)
 
     def update(
         self,
@@ -96,8 +99,9 @@ class _PreAllocatedBatchCache(DynamicCache):
         return None
 
     def reset_slot(self, slot_idx: int) -> None:
-        self.key_cache[:, slot_idx].zero_()
-        self.value_cache[:, slot_idx].zero_()
+        for layer_idx in range(len(self)):
+            self.key_cache[layer_idx][slot_idx].zero_()
+            self.value_cache[layer_idx][slot_idx].zero_()
 
 
 class ContinuousBatchGenerator:
@@ -264,8 +268,14 @@ class ContinuousBatchGenerator:
         prefill_cache._seen_tokens = 0
         prefill_cache._active_seq_len = seq_len - 1  # update() will see seq_end = seq_len
         prefill_cache._per_row_cache_positions = None
-        prefill_cache.key_cache = self._cache.key_cache[:, batch_idx : batch_idx + 1]
-        prefill_cache.value_cache = self._cache.value_cache[:, batch_idx : batch_idx + 1]
+        prefill_cache.key_cache = [
+            self._cache.key_cache[l][batch_idx : batch_idx + 1]
+            for l in range(len(self._cache))
+        ]
+        prefill_cache.value_cache = [
+            self._cache.value_cache[l][batch_idx : batch_idx + 1]
+            for l in range(len(self._cache))
+        ]
 
         outputs = self.model(
             input_ids=input_ids,
@@ -314,19 +324,13 @@ class ContinuousBatchGenerator:
             input_ids[slot.batch_idx, 0] = slot.generated_ids[-1]
 
         # Build attention_mask [max_batch_size, max_active_len + 1]
-        # Empty slots get attn_mask[idx, 0] = 1 to avoid all-zero rows
-        # which cause issues with flash attention's _upad_input.
         attn_mask = torch.zeros(
             self.max_batch_size, max_active_len + 1, dtype=torch.long, device=device
         )
-        occupied = {s.batch_idx for s in slots}
         for slot in slots:
             valid_len = self._valid_lens[slot.batch_idx]
             attn_mask[slot.batch_idx, :valid_len] = 1  # valid cached positions
             attn_mask[slot.batch_idx, valid_len] = 1  # new token at slot's own position
-        for idx in range(self.max_batch_size):
-            if idx not in occupied:
-                attn_mask[idx, 0] = 1  # prevent all-zero row
 
         # cache_position: max_active_len for correct causal mask sizing
         cache_position = torch.tensor([max_active_len], device=device)
