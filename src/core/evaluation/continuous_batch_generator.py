@@ -51,7 +51,6 @@ class _PreAllocatedBatchCache(DynamicCache):
         dtype: torch.dtype,
     ) -> None:
         super().__init__()
-        self._seen_tokens = 0
         self._active_seq_len = 0
         self._per_row_cache_positions: Optional[torch.Tensor] = None
         self._batch_indices = torch.arange(max_batch_size, device=device)
@@ -71,9 +70,6 @@ class _PreAllocatedBatchCache(DynamicCache):
         layer_idx: int,
         cache_kwargs: Optional[dict] = None,
     ):
-        if layer_idx == 0:
-            self._seen_tokens += key_states.shape[-2]
-
         if self._per_row_cache_positions is not None:
             # Per-slot decode: each batch row writes KV to its own position.
             k_cache = self.key_cache[layer_idx]
@@ -105,7 +101,6 @@ class _PreAllocatedBatchCache(DynamicCache):
         """Return a single-slot cache wrapper that writes directly into row `batch_idx`."""
         view = _PreAllocatedBatchCache.__new__(_PreAllocatedBatchCache)
         DynamicCache.__init__(view)
-        view._seen_tokens = 0
         view._active_seq_len = seq_len - 1  # update() will see seq_end = seq_len
         view._per_row_cache_positions = None
         view.key_cache = [self.key_cache[i][batch_idx : batch_idx + 1] for i in range(len(self))]
