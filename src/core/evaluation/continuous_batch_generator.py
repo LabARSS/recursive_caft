@@ -115,7 +115,6 @@ class _PreAllocatedBatchCache(DynamicCache):
         return view
 
 
-
 class ContinuousBatchGenerator:
     """Token-by-token generation with continuous batching via model.forward().
 
@@ -192,13 +191,9 @@ class ContinuousBatchGenerator:
 
         if not self.group_scheduling:
             # Simple single-phase path
-            input_queue: deque[tuple[int, list[int], list[int]]] = deque(
-                (i, p, p) for i, p in enumerate(prompts)
-            )
+            input_queue: deque[tuple[int, list[int], list[int]]] = deque((i, p, p) for i, p in enumerate(prompts))
             cache_len = max_prompt_len + self.max_new_tokens
-            num_truncated = self._run_phase(
-                input_queue, results, self.max_new_tokens, None, pbar, cache_len
-            )
+            num_truncated = self._run_phase(input_queue, results, self.max_new_tokens, None, pbar, cache_len)
         else:
             num_truncated = self._generate_grouped(prompts, results, pbar, max_prompt_len)
 
@@ -213,161 +208,57 @@ class ContinuousBatchGenerator:
         pbar: tqdm,
         max_prompt_len: int,
     ) -> int:
-        """Phase-based group scheduling: fast → medium → slow.
+        """Phase-based group scheduling with 3 phases (sequential).
 
-        The fast phase is the outer loop. Medium/slow phases interrupt when
-        their queues reach max_batch_size, then control returns to fast.
+        Thresholds: 1/8, 1/4, 1 of max_new_tokens.
+        Each phase uses a smaller cache, keeping max_active_len low.
 
         Returns total num_truncated.
         """
-        t1 = self.max_new_tokens // 4
-        t2 = self.max_new_tokens // 2
-        num_truncated = 0
+        t1 = self.max_new_tokens // 8
+        t2 = self.max_new_tokens // 4
 
-        input_queue: deque[tuple[int, list[int], list[int]]] = deque(
-            (i, p, p) for i, p in enumerate(prompts)
-        )
-        medium_queue: deque[_PromotedSequence] = deque()
-        slow_queue: deque[_PromotedSequence] = deque()
+        input_queue: deque[tuple[int, list[int], list[int]]] = deque((i, p, p) for i, p in enumerate(prompts))
+        q2: deque[_PromotedSequence] = deque()
+        q3: deque[_PromotedSequence] = deque()
 
-        def run_medium_phase() -> int:
-            nonlocal num_truncated
-            if not medium_queue:
-                return 0
-            mq: deque[tuple[int, list[int], list[int]]] = deque()
-            max_prompt = 0
-            for ps in medium_queue:
-                prefill_ids = ps.prompt_ids + ps.generated_ids
-                mq.append((ps.index, ps.prompt_ids, prefill_ids))
-                max_prompt = max(max_prompt, len(ps.prompt_ids))
-            medium_queue.clear()
-            cache_len = max_prompt + t2
-            logger.info(f"[phase] Starting medium phase: {len(mq)} sequences, cache_len={cache_len}")
-            trunc = self._run_phase(mq, results, t2, slow_queue, pbar, cache_len)
-            num_truncated += trunc
-            return trunc
-
-        def run_slow_phase() -> int:
-            nonlocal num_truncated
-            if not slow_queue:
-                return 0
-            sq: deque[tuple[int, list[int], list[int]]] = deque()
-            max_prompt = 0
-            for ps in slow_queue:
-                prefill_ids = ps.prompt_ids + ps.generated_ids
-                sq.append((ps.index, ps.prompt_ids, prefill_ids))
-                max_prompt = max(max_prompt, len(ps.prompt_ids))
-            slow_queue.clear()
-            cache_len = max_prompt + self.max_new_tokens
-            logger.info(f"[phase] Starting slow phase: {len(sq)} sequences, cache_len={cache_len}")
-            trunc = self._run_phase(sq, results, self.max_new_tokens, None, pbar, cache_len)
-            num_truncated += trunc
-            return trunc
-
-        # Fast phase as outer loop
-        fast_cache_len = max_prompt_len + t1
         logger.info(
-            f"[phase] Starting fast phase: {len(input_queue)} prompts, "
+            f"[phase] Starting grouped generation: {len(input_queue)} prompts, "
             f"thresholds t1={t1} t2={t2} max={self.max_new_tokens}"
         )
-        self._cache = self._init_cache(fast_cache_len)
-        self._valid_lens = [0] * self.max_batch_size
-        active_slots: list[_Slot | None] = [None] * self.max_batch_size
 
-        step = 0
-        step_time_sum = 0.0
+        # Phase 1: fastest (up to 1/8)
+        trunc = self._run_phase(input_queue, results, t1, q2, pbar, max_prompt_len + t1)
 
-        while input_queue or any(s is not None for s in active_slots):
-            # FILL
-            for slot_idx in range(self.max_batch_size):
-                if active_slots[slot_idx] is not None or not input_queue:
-                    continue
-                result_idx, prompt_ids, prefill_ids = input_queue.popleft()
-                active_slots[slot_idx] = self._prefill(result_idx, prefill_ids, slot_idx, prompt_ids)
+        # Phase 2: fast (up to 1/4)
+        trunc += self._run_promoted_phase(q2, results, t2, q3, pbar)
 
-            occupied = [(i, s) for i, s in enumerate(active_slots) if s is not None]
-            if not occupied:
-                break
+        # Phase 3: slow (up to max)
+        trunc += self._run_promoted_phase(q3, results, self.max_new_tokens, None, pbar)
 
-            slots_only = [s for _, s in occupied]
-            max_active_len = max(self._valid_lens[s.batch_idx] for s in slots_only)
+        return trunc
 
-            step_start = time.perf_counter()
-            self._batched_decode(slots_only)
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
-            step_time_sum += time.perf_counter() - step_start
-
-            if step % 200 == 0:
-                avg_step = step_time_sum / (step + 1)
-                logger.info(
-                    f"[perf] fast step={step} active={len(occupied)} "
-                    f"max_active_len={max_active_len} avg_step={avg_step:.4f}s "
-                    f"queue={len(input_queue)}"
-                )
-            step += 1
-
-            # RETIRE / PROMOTE
-            for slot_idx, slot in occupied:
-                last_token = slot.generated_ids[-1]
-                done = last_token == self.eos_token_id or len(slot.generated_ids) >= self.max_new_tokens
-                promote = not done and len(slot.generated_ids) >= t1
-
-                if done:
-                    if last_token != self.eos_token_id:
-                        num_truncated += 1
-                    results[slot.index] = slot.generated_ids
-                    logger.debug(f"[perf] Prompt {slot.index} completed in fast phase")
-                    active_slots[slot_idx] = None
-                    pbar.update(1)
-                elif promote:
-                    medium_queue.append(_PromotedSequence(
-                        index=slot.index,
-                        prompt_ids=slot.prompt_ids,
-                        generated_ids=list(slot.generated_ids),
-                    ))
-                    logger.debug(
-                        f"[phase] Prompt {slot.index} promoted to medium "
-                        f"(gen_len={len(slot.generated_ids)})"
-                    )
-                    active_slots[slot_idx] = None
-
-            # Interrupt for medium phase when queue is full
-            if len(medium_queue) >= self.max_batch_size:
-                run_medium_phase()
-                # Restore fast cache and re-prefill remaining active slots
-                self._cache = self._init_cache(fast_cache_len)
-                self._valid_lens = [0] * self.max_batch_size
-                for slot_idx, slot in enumerate(active_slots):
-                    if slot is not None:
-                        reprefill_ids = slot.prompt_ids + slot.generated_ids
-                        active_slots[slot_idx] = self._prefill(
-                            slot.index, reprefill_ids, slot_idx, slot.prompt_ids
-                        )
-
-            # Interrupt for slow phase when queue is full
-            if len(slow_queue) >= self.max_batch_size:
-                run_slow_phase()
-                self._cache = self._init_cache(fast_cache_len)
-                self._valid_lens = [0] * self.max_batch_size
-                for slot_idx, slot in enumerate(active_slots):
-                    if slot is not None:
-                        reprefill_ids = slot.prompt_ids + slot.generated_ids
-                        active_slots[slot_idx] = self._prefill(
-                            slot.index, reprefill_ids, slot_idx, slot.prompt_ids
-                        )
-
-        if step > 0:
-            logger.info(
-                f"[perf] Fast phase done: {step} decode steps, "
-                f"avg_step={step_time_sum / step:.4f}s"
-            )
-
-        # Drain remaining medium and slow queues
-        run_medium_phase()
-        run_slow_phase()
-
-        return num_truncated
+    def _run_promoted_phase(
+        self,
+        promoted_queue: deque[_PromotedSequence],
+        results: list[list[int] | None],
+        gen_threshold: int,
+        promote_queue: deque[_PromotedSequence] | None,
+        pbar: tqdm,
+    ) -> int:
+        """Convert promoted sequences to input tuples and run a phase."""
+        if not promoted_queue:
+            return 0
+        input_queue: deque[tuple[int, list[int], list[int]]] = deque()
+        max_prompt = 0
+        for ps in promoted_queue:
+            prefill_ids = ps.prompt_ids + ps.generated_ids
+            input_queue.append((ps.index, ps.prompt_ids, prefill_ids))
+            max_prompt = max(max_prompt, len(ps.prompt_ids))
+        promoted_queue.clear()
+        cache_len = max_prompt + gen_threshold
+        logger.info(f"[phase] Starting phase: {len(input_queue)} sequences, cache_len={cache_len}")
+        return self._run_phase(input_queue, results, gen_threshold, promote_queue, pbar, cache_len)
 
     def _run_phase(
         self,
@@ -432,22 +323,18 @@ class ContinuousBatchGenerator:
                     active_slots[slot_idx] = None
                     pbar.update(1)
                 elif promote and promote_queue is not None:
-                    promote_queue.append(_PromotedSequence(
-                        index=slot.index,
-                        prompt_ids=slot.prompt_ids,
-                        generated_ids=list(slot.generated_ids),
-                    ))
-                    logger.debug(
-                        f"[phase] Prompt {slot.index} promoted "
-                        f"(gen_len={len(slot.generated_ids)})"
+                    promote_queue.append(
+                        _PromotedSequence(
+                            index=slot.index,
+                            prompt_ids=slot.prompt_ids,
+                            generated_ids=list(slot.generated_ids),
+                        )
                     )
+                    logger.debug(f"[phase] Prompt {slot.index} promoted (gen_len={len(slot.generated_ids)})")
                     active_slots[slot_idx] = None
 
         if step > 0:
-            logger.info(
-                f"[perf] Phase done: {step} decode steps, "
-                f"avg_step={step_time_sum / step:.4f}s"
-            )
+            logger.info(f"[perf] Phase done: {step} decode steps, avg_step={step_time_sum / step:.4f}s")
 
         return num_truncated
 
@@ -492,7 +379,7 @@ class ContinuousBatchGenerator:
         next_token = self._sample_token(outputs.logits[:, -1, :])
 
         # Preserve previously generated tokens for promoted sequences
-        prior_generated = list(prefill_ids[len(prompt_ids):])
+        prior_generated = list(prefill_ids[len(prompt_ids) :])
         prior_generated.append(next_token.item())
 
         return _Slot(
@@ -525,16 +412,12 @@ class ContinuousBatchGenerator:
         self._cache._per_row_cache_positions = per_row_positions
 
         # Build input_ids [max_batch_size, 1]
-        input_ids = torch.full(
-            (self.max_batch_size, 1), self.pad_token_id, dtype=torch.long, device=device
-        )
+        input_ids = torch.full((self.max_batch_size, 1), self.pad_token_id, dtype=torch.long, device=device)
         for slot in slots:
             input_ids[slot.batch_idx, 0] = slot.generated_ids[-1]
 
         # Build attention_mask [max_batch_size, max_active_len + 1]
-        attn_mask = torch.zeros(
-            self.max_batch_size, max_active_len + 1, dtype=torch.long, device=device
-        )
+        attn_mask = torch.zeros(self.max_batch_size, max_active_len + 1, dtype=torch.long, device=device)
         for slot in slots:
             valid_len = self._valid_lens[slot.batch_idx]
             attn_mask[slot.batch_idx, :valid_len] = 1  # valid cached positions
