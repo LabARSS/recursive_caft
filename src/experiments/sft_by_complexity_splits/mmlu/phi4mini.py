@@ -95,7 +95,7 @@ for group in range(6):
                 for j in range(6)
             ],
             base_model_id=MODEL_NAME,
-            generation=GenerationConfig(max_new_tokens=6000, max_batch_size=8),
+            generation=GenerationConfig(max_new_tokens=8192, max_batch_size=48),
             summary_filename="summary_cot.json",
         ),
         tokenizer=tokenizer,
