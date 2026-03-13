@@ -334,7 +334,6 @@ class ContinuousBatchGenerator:
                             generated_ids=list(slot.generated_ids),
                         )
                     )
-                    logger.debug(f"[phase] Prompt {slot.index} promoted (gen_len={len(slot.generated_ids)})")
                     active_slots[slot_idx] = None
 
         if step > 0:
