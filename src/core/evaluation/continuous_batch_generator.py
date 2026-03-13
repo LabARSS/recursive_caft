@@ -185,37 +185,9 @@ class ContinuousBatchGenerator:
                     active_slots[slot_idx] = None
                     pbar.update(1)
 
-            # Defragment: keep active slots packed at [0..N-1] so
-            # _batched_decode can truncate tensors to num_active.
-            if not queue:
-                self._defragment_slots(active_slots)
-
         pbar.close()
         sequences = [r if r is not None else [] for r in results]
         return GenerationResult(sequences=sequences, num_truncated=num_truncated, total=len(prompts))
-
-    def _defragment_slots(self, active_slots: list[_Slot | None]) -> None:
-        """Pack active slots into contiguous indices [0..N-1].
-
-        Moves slots from higher indices into gaps left by retired slots,
-        copying their KV cache rows so _batched_decode can truncate tensors.
-        """
-        write = 0
-        for read in range(len(active_slots)):
-            if active_slots[read] is not None:
-                if read != write:
-                    slot = active_slots[read]
-                    self._cache.key_cache[:, write].copy_(
-                        self._cache.key_cache[:, slot.batch_idx]
-                    )
-                    self._cache.value_cache[:, write].copy_(
-                        self._cache.value_cache[:, slot.batch_idx]
-                    )
-                    self._valid_lens[write] = self._valid_lens[slot.batch_idx]
-                    slot.batch_idx = write
-                    active_slots[write] = slot
-                    active_slots[read] = None
-                write += 1
 
     def _prefill(self, prompt_idx: int, prompt_ids: list[int], batch_idx: int) -> _Slot:
         """Run the prefill forward pass to build KV cache and sample the first token.
@@ -261,49 +233,44 @@ class ContinuousBatchGenerator:
         """Run a single batched decode step for all active slots.
 
         Uses the pre-allocated cache — zero tensor allocations per step.
-        Tensors are sized to num_active (not max_batch_size) so the model
-        only processes occupied slots. Slots are kept contiguous at
-        [0..N-1] by the defragmentation step in generate().
+        Always uses max_batch_size tensors to avoid torch.compile
+        recompilation when the number of active slots changes.
         """
         device = self.model.device
-        num_active = len(slots)
 
         # Determine shared write position
         max_active_len = max(self._valid_lens[s.batch_idx] for s in slots)
+        self._cache._active_seq_len = max_active_len
 
-        # Build input_ids [num_active, 1]
+        # Build input_ids [max_batch_size, 1]
         input_ids = torch.full(
-            (num_active, 1), self.pad_token_id, dtype=torch.long, device=device
+            (self.max_batch_size, 1), self.pad_token_id, dtype=torch.long, device=device
         )
         for slot in slots:
             input_ids[slot.batch_idx, 0] = slot.generated_ids[-1]
 
-        # Build attention_mask [num_active, max_active_len + 1]
+        # Build attention_mask [max_batch_size, max_active_len + 1]
+        # Empty slots get attn_mask[idx, 0] = 1 to avoid all-zero rows
+        # which cause issues with flash attention's _upad_input.
         attn_mask = torch.zeros(
-            num_active, max_active_len + 1, dtype=torch.long, device=device
+            self.max_batch_size, max_active_len + 1, dtype=torch.long, device=device
         )
+        occupied = {s.batch_idx for s in slots}
         for slot in slots:
             valid_len = self._valid_lens[slot.batch_idx]
             attn_mask[slot.batch_idx, :valid_len] = 1  # valid cached positions
             attn_mask[slot.batch_idx, max_active_len] = 1  # the new token position
+        for idx in range(self.max_batch_size):
+            if idx not in occupied:
+                attn_mask[idx, 0] = 1  # prevent all-zero row
 
         # cache_position: shared write position
         cache_position = torch.tensor([max_active_len], device=device)
 
-        # position_ids [num_active, 1]
-        position_ids = torch.zeros(num_active, 1, dtype=torch.long, device=device)
+        # position_ids [max_batch_size, 1]
+        position_ids = torch.zeros(self.max_batch_size, 1, dtype=torch.long, device=device)
         for slot in slots:
             position_ids[slot.batch_idx, 0] = slot.seq_position
-
-        # Build a cache view trimmed to num_active batch rows (zero-copy
-        # slices since batch dim is first and contiguous). In-place writes
-        # by the model update the original pre-allocated cache.
-        decode_cache = _PreAllocatedBatchCache.__new__(_PreAllocatedBatchCache)
-        DynamicCache.__init__(decode_cache)
-        decode_cache._seen_tokens = self._cache._seen_tokens
-        decode_cache._active_seq_len = max_active_len
-        decode_cache.key_cache = self._cache.key_cache[:, :num_active]
-        decode_cache.value_cache = self._cache.value_cache[:, :num_active]
 
         # Single forward() call — model writes new KV in-place at cache_position
         outputs = self.model(
@@ -311,7 +278,7 @@ class ContinuousBatchGenerator:
             attention_mask=attn_mask,
             position_ids=position_ids,
             cache_position=cache_position,
-            past_key_values=decode_cache,
+            past_key_values=self._cache,
             use_cache=True,
         )
 
