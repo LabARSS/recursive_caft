@@ -47,6 +47,8 @@ class _PreAllocatedBatchCache(DynamicCache):
         super().__init__()
         self._seen_tokens = 0
         self._active_seq_len = 0
+        self._per_row_cache_positions: Optional[torch.Tensor] = None
+        self._batch_indices = torch.arange(max_batch_size, device=device)
         cache_shape = (num_layers, max_batch_size, num_kv_heads, max_cache_len, head_dim)
         self.key_cache = torch.zeros(cache_shape, dtype=dtype, device=device)
         self.value_cache = torch.zeros(cache_shape, dtype=dtype, device=device)
@@ -62,14 +64,23 @@ class _PreAllocatedBatchCache(DynamicCache):
     ):
         if layer_idx == 0:
             self._seen_tokens += key_states.shape[-2]
-        cache_position = cache_kwargs.get("cache_position") if cache_kwargs else None
-        _static_cache_update(
-            self.key_cache[layer_idx],
-            self.value_cache[layer_idx],
-            key_states,
-            value_states,
-            cache_position,
-        )
+
+        if self._per_row_cache_positions is not None:
+            # Per-slot decode: each batch row writes KV to its own position.
+            k_cache = self.key_cache[layer_idx]
+            v_cache = self.value_cache[layer_idx]
+            k_cache[self._batch_indices, :, self._per_row_cache_positions, :] = key_states[:, :, 0, :]
+            v_cache[self._batch_indices, :, self._per_row_cache_positions, :] = value_states[:, :, 0, :]
+        else:
+            # Standard path (prefill): use shared cache_position.
+            cache_position = cache_kwargs.get("cache_position") if cache_kwargs else None
+            _static_cache_update(
+                self.key_cache[layer_idx],
+                self.value_cache[layer_idx],
+                key_states,
+                value_states,
+                cache_position,
+            )
         # Return a view trimmed to _active_seq_len + 1 so attention only sees
         # valid positions, not the full pre-allocated length.
         seq_end = self._active_seq_len + 1
@@ -252,6 +263,7 @@ class ContinuousBatchGenerator:
         DynamicCache.__init__(prefill_cache)
         prefill_cache._seen_tokens = 0
         prefill_cache._active_seq_len = seq_len - 1  # update() will see seq_end = seq_len
+        prefill_cache._per_row_cache_positions = None
         prefill_cache.key_cache = self._cache.key_cache[:, batch_idx : batch_idx + 1]
         prefill_cache.value_cache = self._cache.value_cache[:, batch_idx : batch_idx + 1]
 
@@ -277,15 +289,22 @@ class ContinuousBatchGenerator:
     def _batched_decode(self, slots: list[_Slot]) -> None:
         """Run a single batched decode step for all active slots.
 
+        Each slot writes KV to its own cache position (no shared write + compact).
         Uses the pre-allocated cache — zero tensor allocations per step.
         Always uses max_batch_size tensors to avoid torch.compile
         recompilation when the number of active slots changes.
         """
         device = self.model.device
 
-        # Determine shared write position
+        # max_active_len determines attention mask width and cache view size.
         max_active_len = max(self._valid_lens[s.batch_idx] for s in slots)
         self._cache._active_seq_len = max_active_len
+
+        # Set per-row cache positions so each slot writes KV at its own valid_len.
+        per_row_positions = torch.zeros(self.max_batch_size, dtype=torch.long, device=device)
+        for slot in slots:
+            per_row_positions[slot.batch_idx] = self._valid_lens[slot.batch_idx]
+        self._cache._per_row_cache_positions = per_row_positions
 
         # Build input_ids [max_batch_size, 1]
         input_ids = torch.full(
@@ -304,12 +323,12 @@ class ContinuousBatchGenerator:
         for slot in slots:
             valid_len = self._valid_lens[slot.batch_idx]
             attn_mask[slot.batch_idx, :valid_len] = 1  # valid cached positions
-            attn_mask[slot.batch_idx, max_active_len] = 1  # the new token position
+            attn_mask[slot.batch_idx, valid_len] = 1  # new token at slot's own position
         for idx in range(self.max_batch_size):
             if idx not in occupied:
                 attn_mask[idx, 0] = 1  # prevent all-zero row
 
-        # cache_position: shared write position
+        # cache_position: max_active_len for correct causal mask sizing
         cache_position = torch.tensor([max_active_len], device=device)
 
         # position_ids [max_batch_size, 1]
@@ -317,7 +336,7 @@ class ContinuousBatchGenerator:
         for slot in slots:
             position_ids[slot.batch_idx, 0] = slot.seq_position
 
-        # Single forward() call — model writes new KV in-place at cache_position
+        # Single forward() call — model writes new KV via per-row cache positions
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attn_mask,
@@ -327,23 +346,15 @@ class ContinuousBatchGenerator:
             use_cache=True,
         )
 
-        # Sample next token per slot
+        # Clear per-row positions (revert to standard path for prefill)
+        self._cache._per_row_cache_positions = None
+
+        # Sample next token per slot and advance valid_lens
         for slot in slots:
             next_token = self._sample_token(outputs.logits[slot.batch_idx : slot.batch_idx + 1, -1, :])
             slot.generated_ids.append(next_token.item())
             slot.seq_position += 1
-
-        # Compact: move new KV from shared write position to each slot's actual position
-        for slot in slots:
-            valid_len = self._valid_lens[slot.batch_idx]
-            if valid_len < max_active_len:
-                self._cache.key_cache[:, slot.batch_idx, :, valid_len, :] = (
-                    self._cache.key_cache[:, slot.batch_idx, :, max_active_len, :]
-                )
-                self._cache.value_cache[:, slot.batch_idx, :, valid_len, :] = (
-                    self._cache.value_cache[:, slot.batch_idx, :, max_active_len, :]
-                )
-            self._valid_lens[slot.batch_idx] = valid_len + 1
+            self._valid_lens[slot.batch_idx] += 1
 
     def _sample_token(self, logits: torch.Tensor) -> torch.Tensor:
         """Sample a single token from logits of shape [1, vocab_size]."""
