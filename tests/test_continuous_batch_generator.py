@@ -195,6 +195,37 @@ class TestCorrectnessVsHFGenerate:
             expected = _hf_generate_greedy(model, tokenizer, prompt, MAX_NEW_TOKENS)
             assert result == expected, f"Prompt {i} order/content mismatch"
 
+    def test_defragmentation_on_partial_batch(self, model_and_tokenizer):
+        """When the queue is empty and slots retire, defragmentation packs
+        remaining slots into [0..N-1]. Verify correctness is preserved.
+
+        Uses 4 prompts with max_batch_size=4 so no queuing occurs.
+        Different prompt lengths cause slots to retire at different times,
+        triggering defragmentation for the remaining slots.
+        """
+        model, tokenizer = model_and_tokenizer
+        prompts = [
+            tokenizer.encode("A"),  # very short → finishes first
+            tokenizer.encode("The quick brown fox jumps over the lazy dog and then"),  # long
+            tokenizer.encode("Hi there"),  # medium
+            tokenizer.encode("Once upon a time in a land far far away there lived"),  # long
+        ]
+
+        gen = ContinuousBatchGenerator(
+            model=model,
+            tokenizer=tokenizer,
+            max_new_tokens=MAX_NEW_TOKENS,
+            max_batch_size=4,  # all fit in one batch, no refilling
+        )
+        results = gen.generate(prompts).sequences
+
+        for i, (prompt, result) in enumerate(zip(prompts, results)):
+            expected = _hf_generate_greedy(model, tokenizer, prompt, MAX_NEW_TOKENS)
+            assert result == expected, (
+                f"Prompt {i} (len={len(prompt)}) mismatch after defragmentation:\n"
+                f"  got:      {result}\n  expected: {expected}"
+            )
+
     def test_batch_size_1_same_as_sequential(self, model_and_tokenizer):
         """batch_size=1 should produce identical results (no batching, just prefill+decode)."""
         model, tokenizer = model_and_tokenizer
