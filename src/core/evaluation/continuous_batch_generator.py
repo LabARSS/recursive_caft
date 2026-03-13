@@ -310,7 +310,7 @@ class ContinuousBatchGenerator:
 
             if step % 200 == 0:
                 avg_step = step_time_sum / (step + 1)
-                logger.info(
+                pbar.write(
                     f"[perf] phase step={step} active={len(occupied)} "
                     f"max_active_len={max_active_len} avg_step={avg_step:.4f}s "
                     f"queue={len(input_queue)}"
