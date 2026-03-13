@@ -229,9 +229,7 @@ class ContinuousBatchGenerator:
         )
 
         # First phase uses input_queue directly
-        trunc += self._run_phase(
-            input_queue, results, threshold, promote_queue, pbar, max_prompt_len + threshold
-        )
+        trunc += self._run_phase(input_queue, results, threshold, promote_queue, pbar, max_prompt_len + threshold)
         phase += 1
 
         # Subsequent phases process promoted sequences
@@ -239,9 +237,7 @@ class ContinuousBatchGenerator:
             threshold = min(self._PHASE_STEP * (phase + 1), self.max_new_tokens)
             next_queue: deque[_PromotedSequence] = deque()
             is_last = threshold >= self.max_new_tokens
-            trunc += self._run_promoted_phase(
-                promote_queue, results, threshold, None if is_last else next_queue, pbar
-            )
+            trunc += self._run_promoted_phase(promote_queue, results, threshold, None if is_last else next_queue, pbar)
             promote_queue = next_queue
             phase += 1
 
@@ -328,7 +324,6 @@ class ContinuousBatchGenerator:
                     if last_token != self.eos_token_id:
                         num_truncated += 1
                     results[slot.index] = slot.generated_ids
-                    logger.debug(f"[perf] Prompt {slot.index} completed in phase")
                     active_slots[slot_idx] = None
                     pbar.update(1)
                 elif promote and promote_queue is not None:
