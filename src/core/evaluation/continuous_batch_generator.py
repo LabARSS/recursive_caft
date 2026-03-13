@@ -154,7 +154,7 @@ class ContinuousBatchGenerator:
         self.pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
         self.eos_token_id = tokenizer.eos_token_id
 
-    def _init_cache(self, max_seq_len: int) -> _PreAllocatedBatchCache:
+    def _init_cache(self, max_seq_len: int, batch_size: int) -> _PreAllocatedBatchCache:
         config = self.model.config
         num_layers = config.num_hidden_layers
         num_kv_heads = getattr(config, "num_key_value_heads", None) or config.num_attention_heads
@@ -165,7 +165,7 @@ class ContinuousBatchGenerator:
             num_layers=num_layers,
             num_kv_heads=num_kv_heads,
             head_dim=head_dim,
-            max_batch_size=self.max_batch_size,
+            max_batch_size=batch_size,
             max_cache_len=max_seq_len,
             device=device,
             dtype=dtype,
@@ -278,16 +278,18 @@ class ContinuousBatchGenerator:
 
         Returns the number of truncated sequences.
         """
-        self._cache = self._init_cache(max_cache_len)
-        self._valid_lens = [0] * self.max_batch_size
-        active_slots: list[_Slot | None] = [None] * self.max_batch_size
+        effective_bs = min(len(input_queue), self.max_batch_size)
+        self._effective_batch_size = effective_bs
+        self._cache = self._init_cache(max_cache_len, effective_bs)
+        self._valid_lens = [0] * effective_bs
+        active_slots: list[_Slot | None] = [None] * effective_bs
         num_truncated = 0
 
         step = 0
         step_time_sum = 0.0
 
         while input_queue or any(s is not None for s in active_slots):
-            for slot_idx in range(self.max_batch_size):
+            for slot_idx in range(effective_bs):
                 if active_slots[slot_idx] is not None or not input_queue:
                     continue
                 result_idx, prompt_ids, prefill_ids = input_queue.popleft()
@@ -400,8 +402,7 @@ class ContinuousBatchGenerator:
 
         Each slot writes KV to its own cache position (no shared write + compact).
         Uses the pre-allocated cache — zero tensor allocations per step.
-        Always uses max_batch_size tensors to avoid torch.compile
-        recompilation when the number of active slots changes.
+        Tensor batch dimension is sized to effective_batch_size (set per phase).
         """
         device = self.model.device
 
@@ -410,18 +411,19 @@ class ContinuousBatchGenerator:
         self._cache._active_seq_len = max_active_len
 
         # Set per-row cache positions so each slot writes KV at its own valid_len.
-        per_row_positions = torch.zeros(self.max_batch_size, dtype=torch.long, device=device)
+        bs = self._effective_batch_size
+        per_row_positions = torch.zeros(bs, dtype=torch.long, device=device)
         for slot in slots:
             per_row_positions[slot.batch_idx] = self._valid_lens[slot.batch_idx]
         self._cache._per_row_cache_positions = per_row_positions
 
-        # Build input_ids [max_batch_size, 1]
-        input_ids = torch.full((self.max_batch_size, 1), self.pad_token_id, dtype=torch.long, device=device)
+        # Build input_ids [bs, 1]
+        input_ids = torch.full((bs, 1), self.pad_token_id, dtype=torch.long, device=device)
         for slot in slots:
             input_ids[slot.batch_idx, 0] = slot.generated_ids[-1]
 
-        # Build attention_mask [max_batch_size, max_active_len + 1]
-        attn_mask = torch.zeros(self.max_batch_size, max_active_len + 1, dtype=torch.long, device=device)
+        # Build attention_mask [bs, max_active_len + 1]
+        attn_mask = torch.zeros(bs, max_active_len + 1, dtype=torch.long, device=device)
         for slot in slots:
             valid_len = self._valid_lens[slot.batch_idx]
             attn_mask[slot.batch_idx, :valid_len] = 1  # valid cached positions
@@ -430,8 +432,8 @@ class ContinuousBatchGenerator:
         # cache_position: max_active_len for correct causal mask sizing
         cache_position = torch.tensor([max_active_len], device=device)
 
-        # position_ids [max_batch_size, 1]
-        position_ids = torch.zeros(self.max_batch_size, 1, dtype=torch.long, device=device)
+        # position_ids [bs, 1]
+        position_ids = torch.zeros(bs, 1, dtype=torch.long, device=device)
         for slot in slots:
             position_ids[slot.batch_idx, 0] = slot.seq_position
 
