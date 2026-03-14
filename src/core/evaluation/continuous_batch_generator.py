@@ -245,7 +245,7 @@ class ContinuousBatchGenerator:
         trunc = 0
         phase = 0
         max_total = max_prompt_len + self.max_new_tokens
-        total_threshold = max(max_prompt_len, min(self._PHASE_STEP, max_total))
+        total_threshold = min(self._PHASE_STEP, max_total)
 
         pbar.write(
             f"[phase] Starting grouped generation: {len(input_queue)} prompts, "
@@ -253,15 +253,16 @@ class ContinuousBatchGenerator:
         )
 
         # First phase uses input_queue directly
-        trunc += self._run_phase(input_queue, results, total_threshold, promote_queue, pbar, total_threshold + 1)
+        cache_len = max(total_threshold, max_prompt_len) + 1
+        trunc += self._run_phase(input_queue, results, total_threshold, promote_queue, pbar, cache_len)
         phase += 1
 
         # Subsequent phases process promoted sequences
         while promote_queue:
-            total_threshold = max(max_prompt_len, min(self._PHASE_STEP * (phase + 1), max_total))
+            total_threshold = min(self._PHASE_STEP * (phase + 1), max_total)
             next_queue: deque[_PromotedSequence] = deque()
             is_last = total_threshold >= max_total
-            trunc += self._run_promoted_phase(promote_queue, results, total_threshold, None if is_last else next_queue, pbar)
+            trunc += self._run_promoted_phase(promote_queue, results, total_threshold, None if is_last else next_queue, pbar, max_prompt_len)
             promote_queue = next_queue
             phase += 1
 
@@ -274,6 +275,7 @@ class ContinuousBatchGenerator:
         total_threshold: int,
         promote_queue: deque[_PromotedSequence] | None,
         pbar: tqdm,
+        max_prompt_len: int,
     ) -> int:
         """Convert promoted sequences to input tuples and run a phase."""
         if not promoted_queue:
@@ -283,7 +285,7 @@ class ContinuousBatchGenerator:
             prefill_ids = ps.prompt_ids + ps.generated_ids
             input_queue.append((ps.index, ps.prompt_ids, prefill_ids))
         promoted_queue.clear()
-        cache_len = total_threshold + 1
+        cache_len = max(total_threshold, max_prompt_len) + 1
         pbar.write(f"[phase] Starting phase: {len(input_queue)} sequences, cache_len={cache_len}")
         return self._run_phase(input_queue, results, total_threshold, promote_queue, pbar, cache_len)
 
@@ -320,6 +322,16 @@ class ContinuousBatchGenerator:
                 if active_slots[slot_idx] is not None or not input_queue:
                     continue
                 result_idx, prompt_ids, prefill_ids = input_queue.popleft()
+                # Skip prefill: promote immediately if already at/past threshold
+                if promote_queue is not None and len(prefill_ids) >= total_threshold:
+                    promote_queue.append(
+                        _PromotedSequence(
+                            index=result_idx,
+                            prompt_ids=prompt_ids,
+                            generated_ids=list(prefill_ids[len(prompt_ids):]),
+                        )
+                    )
+                    continue
                 active_slots[slot_idx] = self._prefill(result_idx, prefill_ids, slot_idx, prompt_ids)
 
             occupied = [(i, s) for i, s in enumerate(active_slots) if s is not None]
