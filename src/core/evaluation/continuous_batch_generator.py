@@ -253,7 +253,7 @@ class ContinuousBatchGenerator:
         )
 
         # First phase uses input_queue directly
-        trunc += self._run_phase(input_queue, results, total_threshold, promote_queue, pbar, total_threshold)
+        trunc += self._run_phase(input_queue, results, total_threshold, promote_queue, pbar, total_threshold + 1)
         phase += 1
 
         # Subsequent phases process promoted sequences
@@ -283,7 +283,7 @@ class ContinuousBatchGenerator:
             prefill_ids = ps.prompt_ids + ps.generated_ids
             input_queue.append((ps.index, ps.prompt_ids, prefill_ids))
         promoted_queue.clear()
-        cache_len = total_threshold
+        cache_len = total_threshold + 1
         pbar.write(f"[phase] Starting phase: {len(input_queue)} sequences, cache_len={cache_len}")
         return self._run_phase(input_queue, results, total_threshold, promote_queue, pbar, cache_len)
 
