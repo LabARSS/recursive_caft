@@ -193,11 +193,27 @@ class ContinuousBatchGenerator:
         right-padded attention masks with FA2.  The check is a guard — FA2's unpadding
         works correctly with right-padded masks.  This patch keeps the FA2 mask logic
         (return mask when it has zeros, else None) but removes the ValueError.
+
+        Walks through wrapper layers (PEFT/LoRA add an extra .model level) to find
+        the inner transformer that owns _update_causal_mask.
         """
-        inner = model.model if hasattr(model, "model") else model
-        if not hasattr(inner, "_update_causal_mask"):
+        # Walk through known wrapper layers to find the object with _update_causal_mask.
+        # Plain:   model.model  (e.g. Qwen2ForCausalLM.model → Qwen2Model)
+        # PEFT:    model.model.model  (PeftModel → LoraModel → XForCausalLM → XModel)
+        candidate = model
+        for _ in range(3):  # up to 3 levels of .model
+            if not hasattr(candidate, "model"):
+                break
+            candidate = candidate.model
+            if hasattr(candidate, "_update_causal_mask"):
+                break
+        else:
             return
-        original = inner._update_causal_mask
+
+        if not hasattr(candidate, "_update_causal_mask"):
+            return
+
+        original = candidate._update_causal_mask
 
         def _update_causal_mask(
             self, attention_mask, input_tensor, cache_position, past_key_values, output_attentions=False
@@ -208,7 +224,7 @@ class ContinuousBatchGenerator:
                 return None
             return original(attention_mask, input_tensor, cache_position, past_key_values, output_attentions)
 
-        inner._update_causal_mask = types.MethodType(_update_causal_mask, inner)
+        candidate._update_causal_mask = types.MethodType(_update_causal_mask, candidate)
 
     def _init_cache(self, max_seq_len: int, batch_size: int) -> _PreAllocatedBatchCache:
         config = self.model.config
