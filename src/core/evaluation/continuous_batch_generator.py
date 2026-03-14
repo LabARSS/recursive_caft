@@ -448,16 +448,6 @@ class ContinuousBatchGenerator:
         for slot in slots:
             input_ids[slot.batch_idx, 0] = slot.generated_ids[-1]
 
-        # Build attention_mask [bs, max_active_len + 1]
-        attn_mask = torch.zeros(bs, max_active_len + 1, dtype=torch.long, device=device)
-        for slot in slots:
-            valid_len = self._valid_lens[slot.batch_idx]
-            attn_mask[slot.batch_idx, :valid_len] = 1  # valid cached positions
-            attn_mask[slot.batch_idx, valid_len] = 1  # new token at slot's own position
-        # Ensure the last column is 1 for all rows so Qwen2 Flash Attention
-        # does not mistake inactive slots for right-padded sequences.
-        attn_mask[:, -1] = 1
-
         # cache_position: max_active_len for correct causal mask sizing
         cache_position = torch.tensor([max_active_len], device=device)
 
@@ -469,7 +459,6 @@ class ContinuousBatchGenerator:
         # Single forward() call — model writes new KV via per-row cache positions
         outputs = self._compiled_model(
             input_ids=input_ids,
-            attention_mask=attn_mask,
             position_ids=position_ids,
             cache_position=cache_position,
             past_key_values=self._cache,
