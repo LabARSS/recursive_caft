@@ -244,7 +244,8 @@ class ContinuousBatchGenerator:
         promote_queue: deque[_PromotedSequence] = deque()
         trunc = 0
         phase = 0
-        threshold = min(self._PHASE_STEP, self.max_new_tokens)
+        max_total = max_prompt_len + self.max_new_tokens
+        total_threshold = max(max_prompt_len, min(self._PHASE_STEP, max_total))
 
         pbar.write(
             f"[phase] Starting grouped generation: {len(input_queue)} prompts, "
@@ -252,15 +253,15 @@ class ContinuousBatchGenerator:
         )
 
         # First phase uses input_queue directly
-        trunc += self._run_phase(input_queue, results, threshold, promote_queue, pbar, max_prompt_len + threshold)
+        trunc += self._run_phase(input_queue, results, total_threshold, promote_queue, pbar, total_threshold)
         phase += 1
 
         # Subsequent phases process promoted sequences
         while promote_queue:
-            threshold = min(self._PHASE_STEP * (phase + 1), self.max_new_tokens)
+            total_threshold = max(max_prompt_len, min(self._PHASE_STEP * (phase + 1), max_total))
             next_queue: deque[_PromotedSequence] = deque()
-            is_last = threshold >= self.max_new_tokens
-            trunc += self._run_promoted_phase(promote_queue, results, threshold, None if is_last else next_queue, pbar)
+            is_last = total_threshold >= max_total
+            trunc += self._run_promoted_phase(promote_queue, results, total_threshold, None if is_last else next_queue, pbar)
             promote_queue = next_queue
             phase += 1
 
@@ -270,7 +271,7 @@ class ContinuousBatchGenerator:
         self,
         promoted_queue: deque[_PromotedSequence],
         results: list[list[int] | None],
-        gen_threshold: int,
+        total_threshold: int,
         promote_queue: deque[_PromotedSequence] | None,
         pbar: tqdm,
     ) -> int:
@@ -278,21 +279,19 @@ class ContinuousBatchGenerator:
         if not promoted_queue:
             return 0
         input_queue: deque[tuple[int, list[int], list[int]]] = deque()
-        max_prompt = 0
         for ps in promoted_queue:
             prefill_ids = ps.prompt_ids + ps.generated_ids
             input_queue.append((ps.index, ps.prompt_ids, prefill_ids))
-            max_prompt = max(max_prompt, len(ps.prompt_ids))
         promoted_queue.clear()
-        cache_len = max_prompt + gen_threshold
+        cache_len = total_threshold
         pbar.write(f"[phase] Starting phase: {len(input_queue)} sequences, cache_len={cache_len}")
-        return self._run_phase(input_queue, results, gen_threshold, promote_queue, pbar, cache_len)
+        return self._run_phase(input_queue, results, total_threshold, promote_queue, pbar, cache_len)
 
     def _run_phase(
         self,
         input_queue: deque[tuple[int, list[int], list[int]]],
         results: list[list[int] | None],
-        gen_threshold: int,
+        total_threshold: int,
         promote_queue: deque[_PromotedSequence] | None,
         pbar: tqdm,
         max_cache_len: int,
@@ -348,7 +347,7 @@ class ContinuousBatchGenerator:
             for slot_idx, slot in occupied:
                 last_token = slot.generated_ids[-1]
                 done = last_token == self.eos_token_id or len(slot.generated_ids) >= self.max_new_tokens
-                promote = not done and promote_queue is not None and len(slot.generated_ids) >= gen_threshold
+                promote = not done and promote_queue is not None and (slot.prompt_len + len(slot.generated_ids)) >= total_threshold
 
                 if done:
                     if last_token != self.eos_token_id:
