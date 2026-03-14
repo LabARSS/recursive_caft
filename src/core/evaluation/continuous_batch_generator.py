@@ -178,6 +178,9 @@ class ContinuousBatchGenerator:
         self.pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
         self.eos_token_id = tokenizer.eos_token_id
         self._effective_batch_size = max_batch_size
+        self._vram_safe_margin = 0.15  # reserve 15% of total VRAM as buffer
+        self._vram_check_interval = 50  # periodic free-VRAM safety check every N decode steps
+        self._vram_reduced_bs: int | None = None  # sticky reduced bs after VRAM pressure
 
         self._patch_causal_mask(self._uncompiled_model)
 
@@ -195,7 +198,9 @@ class ContinuousBatchGenerator:
             return
         original = inner._update_causal_mask
 
-        def _update_causal_mask(self, attention_mask, input_tensor, cache_position, past_key_values, output_attentions=False):
+        def _update_causal_mask(
+            self, attention_mask, input_tensor, cache_position, past_key_values, output_attentions=False
+        ):
             if self.config._attn_implementation == "flash_attention_2":
                 if attention_mask is not None and torch.any(attention_mask == 0):
                     return attention_mask
@@ -221,6 +226,26 @@ class ContinuousBatchGenerator:
             dtype=dtype,
         )
 
+    def _check_vram_pressure(self) -> bool:
+        """Return True if free VRAM is below the safety margin."""
+        if not torch.cuda.is_available():
+            return False
+        free, total = torch.cuda.mem_get_info()
+        return free < total * self._vram_safe_margin
+
+    def _force_requeue_active(
+        self,
+        active_slots: list[_Slot | None],
+        input_queue: deque[tuple[int, list[int], list[int]]],
+    ) -> None:
+        """Push all active slots back to input_queue for retry with reduced batch size."""
+        for i, slot in enumerate(active_slots):
+            if slot is None:
+                continue
+            prefill_ids = slot.prompt_ids + slot.generated_ids
+            input_queue.appendleft((slot.index, slot.prompt_ids, prefill_ids))
+            active_slots[i] = None
+
     @torch.no_grad()
     def generate(self, prompts: list[list[int]]) -> GenerationResult:
         """Generate responses for a list of prompts using continuous batching.
@@ -240,10 +265,11 @@ class ContinuousBatchGenerator:
         max_prompt_len = max(len(p) for p in prompts)
 
         if not self.group_scheduling:
-            # Simple single-phase path
+            # Simple single-phase path (loop handles VRAM-driven re-queue)
             input_queue: deque[tuple[int, list[int], list[int]]] = deque((i, p, p) for i, p in enumerate(prompts))
             cache_len = max_prompt_len + self.max_new_tokens
-            num_truncated = self._run_phase(input_queue, results, self.max_new_tokens, None, pbar, cache_len)
+            while input_queue:
+                num_truncated += self._run_phase(input_queue, results, self.max_new_tokens, None, pbar, cache_len)
         else:
             num_truncated = self._generate_grouped(prompts, results, pbar, max_prompt_len)
 
@@ -279,9 +305,10 @@ class ContinuousBatchGenerator:
             f"phase_step={self._PHASE_STEP} max={self.max_new_tokens}"
         )
 
-        # First phase uses input_queue directly
+        # First phase uses input_queue directly (loop handles VRAM-driven re-queue)
         cache_len = max(total_threshold, max_prompt_len) + 1
-        trunc += self._run_phase(input_queue, results, total_threshold, promote_queue, pbar, cache_len)
+        while input_queue:
+            trunc += self._run_phase(input_queue, results, total_threshold, promote_queue, pbar, cache_len)
         phase += 1
 
         # Subsequent phases process promoted sequences
@@ -289,7 +316,9 @@ class ContinuousBatchGenerator:
             total_threshold = min(self._PHASE_STEP * (phase + 1), max_total)
             next_queue: deque[_PromotedSequence] = deque()
             is_last = total_threshold >= max_total
-            trunc += self._run_promoted_phase(promote_queue, results, total_threshold, None if is_last else next_queue, pbar, max_prompt_len)
+            trunc += self._run_promoted_phase(
+                promote_queue, results, total_threshold, None if is_last else next_queue, pbar, max_prompt_len
+            )
             promote_queue = next_queue
             phase += 1
 
@@ -314,7 +343,10 @@ class ContinuousBatchGenerator:
         promoted_queue.clear()
         cache_len = max(total_threshold, max_prompt_len) + 1
         pbar.write(f"[phase] Starting phase: {len(input_queue)} sequences, cache_len={cache_len}")
-        return self._run_phase(input_queue, results, total_threshold, promote_queue, pbar, cache_len)
+        trunc = 0
+        while input_queue:
+            trunc += self._run_phase(input_queue, results, total_threshold, promote_queue, pbar, cache_len)
+        return trunc
 
     def _run_phase(
         self,
@@ -329,7 +361,8 @@ class ContinuousBatchGenerator:
 
         Returns the number of truncated sequences.
         """
-        effective_bs = min(len(input_queue), self.max_batch_size)
+        max_bs = self._vram_reduced_bs if self._vram_reduced_bs is not None else self.max_batch_size
+        effective_bs = min(len(input_queue), max_bs)
         if effective_bs != self._effective_batch_size:
             pbar.write(
                 f"[perf] Adjusting batch size: {self._effective_batch_size} → {effective_bs}. torch.compile will take time."
@@ -339,6 +372,12 @@ class ContinuousBatchGenerator:
         self._valid_lens = [0] * effective_bs
         active_slots: list[_Slot | None] = [None] * effective_bs
         num_truncated = 0
+
+        _vram_baseline = None
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.reset_peak_memory_stats()
+            _vram_baseline = torch.cuda.memory_allocated()
 
         step = 0
         step_time_sum = 0.0
@@ -354,7 +393,7 @@ class ContinuousBatchGenerator:
                         _PromotedSequence(
                             index=result_idx,
                             prompt_ids=prompt_ids,
-                            generated_ids=list(prefill_ids[len(prompt_ids):]),
+                            generated_ids=list(prefill_ids[len(prompt_ids) :]),
                         )
                     )
                     continue
@@ -373,6 +412,25 @@ class ContinuousBatchGenerator:
                 torch.cuda.synchronize()
             step_time_sum += time.perf_counter() - step_start
 
+            # After first decode step: project VRAM to end of phase
+            if step == 0 and _vram_baseline is not None:
+                peak = torch.cuda.max_memory_allocated()
+                activation_delta = peak - _vram_baseline
+                _, total_vram = torch.cuda.mem_get_info()
+                available = total_vram * (1.0 - self._vram_safe_margin)
+                ratio = max_cache_len / max(max_active_len, 1)
+                projected_total = _vram_baseline + activation_delta * ratio
+                if projected_total > available:
+                    safe_bs = max(int(effective_bs * available / projected_total), 1)
+                    pbar.write(
+                        f"[vram] Projected {projected_total / 1e9:.1f}GB > "
+                        f"available {available / 1e9:.1f}GB. "
+                        f"Reducing bs {effective_bs} -> {safe_bs}"
+                    )
+                    self._vram_reduced_bs = safe_bs
+                    self._force_requeue_active(active_slots, input_queue)
+                    break
+
             if step % 200 == 0:
                 avg_step = step_time_sum / (step + 1)
                 pbar.write(
@@ -382,10 +440,24 @@ class ContinuousBatchGenerator:
                 )
             step += 1
 
+            # Periodic safety net: abort phase if free VRAM is critically low
+            if _vram_baseline is not None and step % self._vram_check_interval == 0:
+                if self._check_vram_pressure():
+                    self._vram_reduced_bs = max(effective_bs // 2, 1)
+                    pbar.write(
+                        f"[vram] Free VRAM critically low at step {step}. Aborting phase. Reducing batch size for next attempt: {effective_bs} -> {self._vram_reduced_bs}."
+                    )
+                    self._force_requeue_active(active_slots, input_queue)
+                    break
+
             for slot_idx, slot in occupied:
                 last_token = slot.generated_ids[-1]
                 done = last_token == self.eos_token_id or len(slot.generated_ids) >= self.max_new_tokens
-                promote = not done and promote_queue is not None and (slot.prompt_len + len(slot.generated_ids)) >= total_threshold
+                promote = (
+                    not done
+                    and promote_queue is not None
+                    and (slot.prompt_len + len(slot.generated_ids)) >= total_threshold
+                )
 
                 if done:
                     if last_token != self.eos_token_id:
@@ -491,7 +563,7 @@ class ContinuousBatchGenerator:
         for slot in slots:
             valid_len = self._valid_lens[slot.batch_idx]
             attn_mask[slot.batch_idx, :valid_len] = 1  # valid cached positions
-            attn_mask[slot.batch_idx, valid_len] = 1    # new token position
+            attn_mask[slot.batch_idx, valid_len] = 1  # new token position
 
         # cache_position: max_active_len for correct causal mask sizing
         cache_position = torch.tensor([max_active_len], device=device)
