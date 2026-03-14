@@ -1,3 +1,4 @@
+import gc
 import time
 import types
 from collections import deque
@@ -368,6 +369,11 @@ class ContinuousBatchGenerator:
                 f"[perf] Adjusting batch size: {self._effective_batch_size} → {effective_bs}. torch.compile will take time."
             )
             self._effective_batch_size = effective_bs
+        if hasattr(self, "_cache"):
+            del self._cache
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         self._cache = self._init_cache(max_cache_len, effective_bs)
         self._valid_lens = [0] * effective_bs
         active_slots: list[_Slot | None] = [None] * effective_bs
