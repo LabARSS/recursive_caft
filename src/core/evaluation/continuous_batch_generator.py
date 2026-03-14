@@ -176,6 +176,7 @@ class ContinuousBatchGenerator:
 
         self.pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
         self.eos_token_id = tokenizer.eos_token_id
+        self._effective_batch_size = max_batch_size
 
     def _init_cache(self, max_seq_len: int, batch_size: int) -> _PreAllocatedBatchCache:
         config = self.model.config
@@ -302,7 +303,6 @@ class ContinuousBatchGenerator:
 
         Returns the number of truncated sequences.
         """
-        self._effective_batch_size = self.max_batch_size
         effective_bs = min(len(input_queue), self.max_batch_size)
         if effective_bs != self._effective_batch_size:
             pbar.write(
