@@ -1,4 +1,5 @@
 import time
+import types
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
@@ -177,6 +178,31 @@ class ContinuousBatchGenerator:
         self.pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
         self.eos_token_id = tokenizer.eos_token_id
         self._effective_batch_size = max_batch_size
+
+        self._patch_causal_mask(self._uncompiled_model)
+
+    @staticmethod
+    def _patch_causal_mask(model: PreTrainedModel) -> None:
+        """Remove the right-padding check from _update_causal_mask for FA2 compatibility.
+
+        Multiple HF models (Qwen2, Phi4, etc.) raise ValueError when they detect
+        right-padded attention masks with FA2.  The check is a guard — FA2's unpadding
+        works correctly with right-padded masks.  This patch keeps the FA2 mask logic
+        (return mask when it has zeros, else None) but removes the ValueError.
+        """
+        inner = model.model if hasattr(model, "model") else model
+        if not hasattr(inner, "_update_causal_mask"):
+            return
+        original = inner._update_causal_mask
+
+        def _update_causal_mask(self, attention_mask, input_tensor, cache_position, past_key_values, output_attentions=False):
+            if self.config._attn_implementation == "flash_attention_2":
+                if attention_mask is not None and torch.any(attention_mask == 0):
+                    return attention_mask
+                return None
+            return original(attention_mask, input_tensor, cache_position, past_key_values, output_attentions)
+
+        inner._update_causal_mask = types.MethodType(_update_causal_mask, inner)
 
     def _init_cache(self, max_seq_len: int, batch_size: int) -> _PreAllocatedBatchCache:
         config = self.model.config
@@ -460,6 +486,13 @@ class ContinuousBatchGenerator:
         for slot in slots:
             input_ids[slot.batch_idx, 0] = slot.generated_ids[-1]
 
+        # Build attention_mask [bs, max_active_len + 1]
+        attn_mask = torch.zeros(bs, max_active_len + 1, dtype=torch.long, device=device)
+        for slot in slots:
+            valid_len = self._valid_lens[slot.batch_idx]
+            attn_mask[slot.batch_idx, :valid_len] = 1  # valid cached positions
+            attn_mask[slot.batch_idx, valid_len] = 1    # new token position
+
         # cache_position: max_active_len for correct causal mask sizing
         cache_position = torch.tensor([max_active_len], device=device)
 
@@ -471,6 +504,7 @@ class ContinuousBatchGenerator:
         # Single forward() call — model writes new KV via per-row cache positions
         outputs = self._compiled_model(
             input_ids=input_ids,
+            attention_mask=attn_mask,
             position_ids=position_ids,
             cache_position=cache_position,
             past_key_values=self._cache,
