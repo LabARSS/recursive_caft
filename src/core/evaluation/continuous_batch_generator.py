@@ -40,6 +40,8 @@ class _PreAllocatedBatchCache(DynamicCache):
     _update_causal_mask (target_length = attention_mask.shape[-1]).
     """
 
+    is_compileable = True
+
     def __init__(
         self,
         num_layers: int,
@@ -51,6 +53,7 @@ class _PreAllocatedBatchCache(DynamicCache):
         dtype: torch.dtype,
     ) -> None:
         super().__init__()
+        self.max_cache_len = max_cache_len
         self._active_seq_len = 0
         self._per_row_cache_positions: Optional[torch.Tensor] = None
         self._batch_indices = torch.arange(max_batch_size, device=device)
@@ -97,10 +100,14 @@ class _PreAllocatedBatchCache(DynamicCache):
     def get_seq_length(self, layer_idx: Optional[int] = 0) -> int:
         return self._active_seq_len
 
+    def get_max_cache_shape(self) -> int:
+        return self.max_cache_len
+
     def prefill_view(self, batch_idx: int, seq_len: int) -> "_PreAllocatedBatchCache":
         """Return a single-slot cache wrapper that writes directly into row `batch_idx`."""
         view = _PreAllocatedBatchCache.__new__(_PreAllocatedBatchCache)
         DynamicCache.__init__(view)
+        view.max_cache_len = self.max_cache_len
         view._active_seq_len = seq_len - 1  # update() will see seq_end = seq_len
         view._per_row_cache_positions = None
         view.key_cache = [self.key_cache[i][batch_idx : batch_idx + 1] for i in range(len(self))]
