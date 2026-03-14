@@ -454,6 +454,9 @@ class ContinuousBatchGenerator:
             valid_len = self._valid_lens[slot.batch_idx]
             attn_mask[slot.batch_idx, :valid_len] = 1  # valid cached positions
             attn_mask[slot.batch_idx, valid_len] = 1  # new token at slot's own position
+        # Ensure the last column is 1 for all rows so Qwen2 Flash Attention
+        # does not mistake inactive slots for right-padded sequences.
+        attn_mask[:, -1] = 1
 
         # cache_position: max_active_len for correct causal mask sizing
         cache_position = torch.tensor([max_active_len], device=device)
