@@ -380,12 +380,6 @@ class ContinuousBatchGenerator:
         active_slots: list[_Slot | None] = [None] * effective_bs
         num_truncated = 0
 
-        _vram_baseline = None
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-            torch.cuda.reset_peak_memory_stats()
-            _vram_baseline = torch.cuda.memory_allocated()
-
         step = 0
         step_time_sum = 0.0
 
@@ -419,25 +413,6 @@ class ContinuousBatchGenerator:
                 torch.cuda.synchronize()
             step_time_sum += time.perf_counter() - step_start
 
-            # After first decode step: project VRAM to end of phase
-            if step == 0 and _vram_baseline is not None:
-                peak = torch.cuda.max_memory_allocated()
-                activation_delta = peak - _vram_baseline
-                _, total_vram = torch.cuda.mem_get_info()
-                available = total_vram * (1.0 - self._vram_safe_margin)
-                ratio = max_cache_len / max(max_active_len, 1)
-                projected_total = _vram_baseline + activation_delta * ratio
-                if projected_total > available:
-                    safe_bs = max(int(effective_bs * available / projected_total), 1)
-                    pbar.write(
-                        f"[vram] Projected {projected_total / 1e9:.1f}GB > "
-                        f"available {available / 1e9:.1f}GB. "
-                        f"Reducing bs {effective_bs} -> {safe_bs}"
-                    )
-                    self._vram_reduced_bs = safe_bs
-                    self._force_requeue_active(active_slots, input_queue)
-                    break
-
             if step % 200 == 0:
                 avg_step = step_time_sum / (step + 1)
                 pbar.write(
@@ -448,7 +423,7 @@ class ContinuousBatchGenerator:
             step += 1
 
             # Periodic safety net: abort phase if free VRAM is critically low
-            if _vram_baseline is not None and step % self._vram_check_interval == 0:
+            if torch.cuda.is_available() and step % self._vram_check_interval == 0:
                 if self._check_vram_pressure():
                     self._vram_reduced_bs = max(effective_bs // 2, 1)
                     pbar.write(
