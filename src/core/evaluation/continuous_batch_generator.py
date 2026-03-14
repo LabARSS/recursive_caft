@@ -155,6 +155,13 @@ class ContinuousBatchGenerator:
         group_scheduling: bool | None = None,
     ):
         self.model = model
+        # Use uncompiled model for prefill, compiled for decode — mirrors HF generate().
+        if hasattr(model, "_orig_mod"):
+            self._compiled_model = model
+            self._uncompiled_model = model._orig_mod
+        else:
+            self._compiled_model = model
+            self._uncompiled_model = model
         self.tokenizer = tokenizer
         self.max_new_tokens = max_new_tokens
         self.max_batch_size = max_batch_size
@@ -393,7 +400,7 @@ class ContinuousBatchGenerator:
 
         prefill_cache = self._cache.prefill_view(batch_idx, seq_len)
 
-        outputs = self.model(
+        outputs = self._uncompiled_model(
             input_ids=input_ids,
             position_ids=position_ids,
             cache_position=cache_position,
@@ -458,7 +465,7 @@ class ContinuousBatchGenerator:
             position_ids[slot.batch_idx, 0] = slot.seq_position
 
         # Single forward() call — model writes new KV via per-row cache positions
-        outputs = self.model(
+        outputs = self._compiled_model(
             input_ids=input_ids,
             attention_mask=attn_mask,
             position_ids=position_ids,
