@@ -65,6 +65,7 @@ class Evaluator:
             else:
                 logger.info("Compiling model with torch.compile... First forward call will be slow.")
                 torch.set_float32_matmul_precision("high")
+                torch._dynamo.config.cache_size_limit = 64
                 model = torch.compile(model)
 
         results: list[EvaluationResult] = []
