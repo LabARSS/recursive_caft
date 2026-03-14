@@ -33,11 +33,44 @@ class _PromotedSequence:
     generated_ids: list[int]  # tokens generated so far
 
 
-class _PreAllocatedBatchCache(DynamicCache):
-    """Pre-allocated KV cache that updates in-place via index_copy_.
+class _PrefillCacheView(DynamicCache):
+    """Lightweight cache view for prefill forward passes.
 
-    Subclasses DynamicCache so models take the DynamicCache code path in
-    _update_causal_mask (target_length = attention_mask.shape[-1]).
+    Uses _static_cache_update (shared cache_position) with no branches,
+    so torch.compile can trace a single code path per layer.
+    """
+
+    def update(
+        self,
+        key_states: torch.Tensor,
+        value_states: torch.Tensor,
+        layer_idx: int,
+        cache_kwargs: Optional[dict] = None,
+    ):
+        cache_position = cache_kwargs.get("cache_position") if cache_kwargs else None
+        _static_cache_update(
+            self.key_cache[layer_idx],
+            self.value_cache[layer_idx],
+            key_states,
+            value_states,
+            cache_position,
+        )
+        seq_end = self._active_seq_len + 1
+        return (
+            self.key_cache[layer_idx][:, :, :seq_end, :],
+            self.value_cache[layer_idx][:, :, :seq_end, :],
+        )
+
+    def get_seq_length(self, layer_idx: Optional[int] = 0) -> int:
+        return self._active_seq_len
+
+
+class _PreAllocatedBatchCache(DynamicCache):
+    """Pre-allocated KV cache for batched decode with per-row positions.
+
+    Uses a branchless update() (always per-row indexed write) so
+    torch.compile sees a single code path and avoids guard explosion.
+    Prefill uses a separate _PrefillCacheView returned by prefill_view().
     """
 
     is_compileable = True
@@ -55,7 +88,7 @@ class _PreAllocatedBatchCache(DynamicCache):
         super().__init__()
         self.max_cache_len = max_cache_len
         self._active_seq_len = 0
-        self._per_row_cache_positions: Optional[torch.Tensor] = None
+        self._per_row_cache_positions = torch.zeros(max_batch_size, dtype=torch.long, device=device)
         self._batch_indices = torch.arange(max_batch_size, device=device)
         cache_shape = (max_batch_size, num_kv_heads, max_cache_len, head_dim)
         for _ in range(num_layers):
@@ -73,24 +106,10 @@ class _PreAllocatedBatchCache(DynamicCache):
         layer_idx: int,
         cache_kwargs: Optional[dict] = None,
     ):
-        if self._per_row_cache_positions is not None:
-            # Per-slot decode: each batch row writes KV to its own position.
-            k_cache = self.key_cache[layer_idx]
-            v_cache = self.value_cache[layer_idx]
-            k_cache[self._batch_indices, :, self._per_row_cache_positions, :] = key_states[:, :, 0, :]
-            v_cache[self._batch_indices, :, self._per_row_cache_positions, :] = value_states[:, :, 0, :]
-        else:
-            # Standard path (prefill): use shared cache_position.
-            cache_position = cache_kwargs.get("cache_position") if cache_kwargs else None
-            _static_cache_update(
-                self.key_cache[layer_idx],
-                self.value_cache[layer_idx],
-                key_states,
-                value_states,
-                cache_position,
-            )
-        # Return a view trimmed to _active_seq_len + 1 so attention only sees
-        # valid positions, not the full pre-allocated length.
+        k_cache = self.key_cache[layer_idx]
+        v_cache = self.value_cache[layer_idx]
+        k_cache[self._batch_indices, :, self._per_row_cache_positions, :] = key_states[:, :, 0, :]
+        v_cache[self._batch_indices, :, self._per_row_cache_positions, :] = value_states[:, :, 0, :]
         seq_end = self._active_seq_len + 1
         return (
             self.key_cache[layer_idx][:, :, :seq_end, :],
@@ -103,13 +122,10 @@ class _PreAllocatedBatchCache(DynamicCache):
     def get_max_cache_shape(self) -> int:
         return self.max_cache_len
 
-    def prefill_view(self, batch_idx: int, seq_len: int) -> "_PreAllocatedBatchCache":
+    def prefill_view(self, batch_idx: int, seq_len: int) -> _PrefillCacheView:
         """Return a single-slot cache wrapper that writes directly into row `batch_idx`."""
-        view = _PreAllocatedBatchCache.__new__(_PreAllocatedBatchCache)
-        DynamicCache.__init__(view)
-        view.max_cache_len = self.max_cache_len
+        view = _PrefillCacheView()
         view._active_seq_len = seq_len - 1  # update() will see seq_end = seq_len
-        view._per_row_cache_positions = None
         view.key_cache = [self.key_cache[i][batch_idx : batch_idx + 1] for i in range(len(self))]
         view.value_cache = [self.value_cache[i][batch_idx : batch_idx + 1] for i in range(len(self))]
         return view
@@ -450,9 +466,6 @@ class ContinuousBatchGenerator:
             past_key_values=self._cache,
             use_cache=True,
         )
-
-        # Clear per-row positions (revert to standard path for prefill)
-        self._cache._per_row_cache_positions = None
 
         # Sample next token per slot and advance valid_lens
         for slot in slots:
