@@ -179,6 +179,7 @@ class ContinuousBatchGenerator:
         self.pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
         self.eos_token_id = tokenizer.eos_token_id
         self._effective_batch_size = max_batch_size
+        self._cache = None
         self._vram_safe_margin = 0.15  # reserve 15% of total VRAM as buffer
         self._vram_check_interval = 50  # periodic free-VRAM safety check every N decode steps
         self._vram_reduced_bs: int | None = None  # sticky reduced bs after VRAM pressure
@@ -378,6 +379,8 @@ class ContinuousBatchGenerator:
 
         Returns the number of truncated sequences.
         """
+        self._cache = None
+
         max_bs = self._vram_reduced_bs if self._vram_reduced_bs is not None else self.max_batch_size
         effective_bs = min(len(input_queue), max_bs)
         if effective_bs != self._effective_batch_size:
@@ -386,11 +389,10 @@ class ContinuousBatchGenerator:
             )
             self._effective_batch_size = effective_bs
 
-            if hasattr(self, "_cache"):
-                del self._cache
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
         self._cache = self._init_cache(max_cache_len, effective_bs)
         self._valid_lens = [0] * effective_bs
         active_slots: list[_Slot | None] = [None] * effective_bs
