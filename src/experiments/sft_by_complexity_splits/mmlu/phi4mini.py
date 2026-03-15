@@ -18,14 +18,19 @@ MODEL_NAME = "microsoft/Phi-4-mini-instruct"
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
 
-for group in range(6):
+paths = [
+    Path(__file__)
+    .parent.joinpath(f"../../../../artifacts/sft_by_complexity_splits/mmlu/phi4mini/group{group}")
+    .as_posix()
+    for group in range(6)
+]
+
+for group, path in enumerate(paths):
     logger.info(f"Training on group {group}...")
 
     trainer = LoRATrainer(
         config=LoRATrainerConfig(
-            out_path=Path(__file__)
-            .parent.joinpath(f"../../../../artifacts/sft_by_complexity_splits/mmlu/phi4mini/group{group}")
-            .as_posix(),
+            out_path=path,
             model_id=MODEL_NAME,
             train_dataset=CausalDatasetAdapter(
                 dataset=MMLUSingleTokenResponseDataset(
@@ -40,7 +45,7 @@ for group in range(6):
                     tokenizer=tokenizer,
                 )
             ),
-            training_args=LoRATrainingArgs(num_train_epochs=20, per_device_train_batch_size=32),
+            training_args=LoRATrainingArgs(num_train_epochs=20, per_device_train_batch_size=16),
             save_schedule=[1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20],
         ),
         tokenizer=tokenizer,
@@ -48,9 +53,12 @@ for group in range(6):
     trainer.train()
     trainer.unload()
 
+for group, path in enumerate(paths):
+    logger.info(f"Single token evals on group {group}...")
+
     single_token_evaluator = MultiCheckpointEvaluator(
         config=MultiCheckpointEvaluatorConfig(
-            checkpoints_dir=trainer.config.out_path,
+            checkpoints_dir=path,
             eval_dataset=[
                 QADatasetAdapter(
                     dataset=MMLUSingleTokenResponseDataset(
@@ -68,16 +76,19 @@ for group in range(6):
                 for j in range(6)
             ],
             base_model_id=MODEL_NAME,
-            generation=GenerationConfig(max_new_tokens=1, max_batch_size=64),
+            generation=GenerationConfig(max_new_tokens=1, max_batch_size=32),
             summary_filename="summary_single_token.json",
         ),
         tokenizer=tokenizer,
     )
     single_token_evaluator.evaluate_all()
 
+for group, path in enumerate(paths):
+    logger.info(f"CoT token evals on group {group}...")
+
     cot_evaluator = MultiCheckpointEvaluator(
         config=MultiCheckpointEvaluatorConfig(
-            checkpoints_dir=trainer.config.out_path,
+            checkpoints_dir=path,
             eval_dataset=[
                 QADatasetAdapter(
                     dataset=MMLUCoTResponseDataset(
@@ -95,7 +106,7 @@ for group in range(6):
                 for j in range(6)
             ],
             base_model_id=MODEL_NAME,
-            generation=GenerationConfig(max_new_tokens=8192, max_batch_size=48),
+            generation=GenerationConfig(max_new_tokens=8192, max_batch_size=32),
             summary_filename="summary_cot.json",
         ),
         tokenizer=tokenizer,

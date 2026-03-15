@@ -19,14 +19,19 @@ MODEL_NAME = "meta-llama/Llama-3.2-3B-Instruct"
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
 tokenizer.pad_token = tokenizer.eos_token
 
-for group in range(6):
+paths = [
+    Path(__file__)
+    .parent.joinpath(f"../../../../artifacts/sft_by_complexity_splits/mmlu/llama_3b/group{group}")
+    .as_posix()
+    for group in range(6)
+]
+
+for group, path in enumerate(paths):
     logger.info(f"Training on group {group}...")
 
     trainer = LoRATrainer(
         config=LoRATrainerConfig(
-            out_path=Path(__file__)
-            .parent.joinpath(f"../../../../artifacts/sft_by_complexity_splits/mmlu/llama_3b/group{group}")
-            .as_posix(),
+            out_path=path,
             model_id=MODEL_NAME,
             train_dataset=CausalDatasetAdapter(
                 dataset=MMLUSingleTokenResponseDataset(
@@ -49,9 +54,12 @@ for group in range(6):
     trainer.train()
     trainer.unload()
 
+for group, path in enumerate(paths):
+    logger.info(f"Single token evals on group {group}...")
+
     single_token_evaluator = MultiCheckpointEvaluator(
         config=MultiCheckpointEvaluatorConfig(
-            checkpoints_dir=trainer.config.out_path,
+            checkpoints_dir=path,
             eval_dataset=[
                 QADatasetAdapter(
                     dataset=MMLUSingleTokenResponseDataset(
@@ -76,9 +84,12 @@ for group in range(6):
     )
     single_token_evaluator.evaluate_all()
 
+for group, path in enumerate(paths):
+    logger.info(f"CoT token evals on group {group}...")
+
     cot_evaluator = MultiCheckpointEvaluator(
         config=MultiCheckpointEvaluatorConfig(
-            checkpoints_dir=trainer.config.out_path,
+            checkpoints_dir=path,
             eval_dataset=[
                 QADatasetAdapter(
                     dataset=MMLUCoTResponseDataset(
