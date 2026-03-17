@@ -1,4 +1,4 @@
-"""Tests for ContinuousBatchGenerator with proper batched decode.
+"""Tests for BatchGenerator with proper batched decode.
 
 Uses sshleifer/tiny-gpt2 (~500KB) — a minimal GPT-2 model that supports
 KV cache and all the HF generation APIs we rely on.
@@ -15,7 +15,7 @@ import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from core.evaluation.continuous_batch_generator import ContinuousBatchGenerator
+from core.evaluation.continuous_batch_generator import BatchGenerator
 
 MODEL_ID = "sshleifer/tiny-gpt2"
 MAX_NEW_TOKENS = 20
@@ -57,7 +57,7 @@ class TestCorrectnessVsHFGenerate:
         model, tokenizer = model_and_tokenizer
         prompt = tokenizer.encode("Hello world")
 
-        gen = ContinuousBatchGenerator(
+        gen = BatchGenerator(
             model=model,
             tokenizer=tokenizer,
             max_new_tokens=MAX_NEW_TOKENS,
@@ -75,7 +75,7 @@ class TestCorrectnessVsHFGenerate:
             tokenizer.encode("A dog ran to"),
         ]
 
-        gen = ContinuousBatchGenerator(
+        gen = BatchGenerator(
             model=model,
             tokenizer=tokenizer,
             max_new_tokens=MAX_NEW_TOKENS,
@@ -96,7 +96,7 @@ class TestCorrectnessVsHFGenerate:
             tokenizer.encode("Once"),  # short
         ]
 
-        gen = ContinuousBatchGenerator(
+        gen = BatchGenerator(
             model=model,
             tokenizer=tokenizer,
             max_new_tokens=MAX_NEW_TOKENS,
@@ -106,7 +106,9 @@ class TestCorrectnessVsHFGenerate:
 
         for i, (prompt, result) in enumerate(zip(prompts, results)):
             expected = _hf_generate_greedy(model, tokenizer, prompt, MAX_NEW_TOKENS)
-            assert result == expected, f"Prompt {i} (len={len(prompt)}) mismatch:\n  got:      {result}\n  expected: {expected}"
+            assert result == expected, (
+                f"Prompt {i} (len={len(prompt)}) mismatch:\n  got:      {result}\n  expected: {expected}"
+            )
 
     def test_variable_length_prompts_batched_pairwise(self, model_and_tokenizer):
         """Prompts with very different lengths forced into the same batch (batch_size=2).
@@ -121,7 +123,7 @@ class TestCorrectnessVsHFGenerate:
             tokenizer.encode("The quick brown fox jumps over the lazy dog and then keeps running"),  # much longer
         ]
 
-        gen = ContinuousBatchGenerator(
+        gen = BatchGenerator(
             model=model,
             tokenizer=tokenizer,
             max_new_tokens=MAX_NEW_TOKENS,
@@ -146,7 +148,7 @@ class TestCorrectnessVsHFGenerate:
             tokenizer.encode("Five five"),
         ]
 
-        gen = ContinuousBatchGenerator(
+        gen = BatchGenerator(
             model=model,
             tokenizer=tokenizer,
             max_new_tokens=MAX_NEW_TOKENS,
@@ -163,7 +165,7 @@ class TestCorrectnessVsHFGenerate:
         prompt = tokenizer.encode("Hello")
         max_tokens = 5
 
-        gen = ContinuousBatchGenerator(
+        gen = BatchGenerator(
             model=model,
             tokenizer=tokenizer,
             max_new_tokens=max_tokens,
@@ -182,7 +184,7 @@ class TestCorrectnessVsHFGenerate:
             tokenizer.encode("Gamma"),
         ]
 
-        gen = ContinuousBatchGenerator(
+        gen = BatchGenerator(
             model=model,
             tokenizer=tokenizer,
             max_new_tokens=MAX_NEW_TOKENS,
@@ -211,7 +213,7 @@ class TestCorrectnessVsHFGenerate:
             tokenizer.encode("Once upon a time in a land far far away there lived"),  # long
         ]
 
-        gen = ContinuousBatchGenerator(
+        gen = BatchGenerator(
             model=model,
             tokenizer=tokenizer,
             max_new_tokens=MAX_NEW_TOKENS,
@@ -234,7 +236,7 @@ class TestCorrectnessVsHFGenerate:
             tokenizer.encode("Second"),
         ]
 
-        gen = ContinuousBatchGenerator(
+        gen = BatchGenerator(
             model=model,
             tokenizer=tokenizer,
             max_new_tokens=MAX_NEW_TOKENS,
@@ -246,12 +248,11 @@ class TestCorrectnessVsHFGenerate:
             expected = _hf_generate_greedy(model, tokenizer, prompt, MAX_NEW_TOKENS)
             assert result == expected
 
-    def test_group_scheduling_matches_flat(self, model_and_tokenizer):
-        """Phase-based group scheduling must produce identical results to flat generation.
+    def test_phased_generation_correctness(self, model_and_tokenizer):
+        """Phased generation must produce identical results to HF generate().
 
-        With max_new_tokens=20, t1=5 and t2=10. Sequences generating more than 5
-        tokens get promoted to the medium phase, >10 to slow. Under greedy decoding,
-        results must be identical regardless of phase transitions.
+        With max_new_tokens=20, sequences may span multiple phases. Under greedy
+        decoding, results must be identical regardless of phase transitions.
         """
         model, tokenizer = model_and_tokenizer
         prompts = [
@@ -262,19 +263,18 @@ class TestCorrectnessVsHFGenerate:
             tokenizer.encode("Hi"),
         ]
 
-        gen = ContinuousBatchGenerator(
+        gen = BatchGenerator(
             model=model,
             tokenizer=tokenizer,
             max_new_tokens=MAX_NEW_TOKENS,
             max_batch_size=2,  # small batch forces queuing + phase interrupts
-            group_scheduling=True,  # force on despite small max_new_tokens
         )
         results = gen.generate(prompts).sequences
 
         for i, (prompt, result) in enumerate(zip(prompts, results)):
             expected = _hf_generate_greedy(model, tokenizer, prompt, MAX_NEW_TOKENS)
             assert result == expected, (
-                f"Prompt {i} (len={len(prompt)}) mismatch with group scheduling:\n"
+                f"Prompt {i} (len={len(prompt)}) mismatch with phased generation:\n"
                 f"  got:      {result}\n  expected: {expected}"
             )
 
@@ -310,7 +310,7 @@ class TestPerformance:
         max_tokens = 30
 
         # Sequential: batch_size=1
-        gen_seq = ContinuousBatchGenerator(
+        gen_seq = BatchGenerator(
             model=model,
             tokenizer=tokenizer,
             max_new_tokens=max_tokens,
@@ -321,7 +321,7 @@ class TestPerformance:
         time_sequential = time.perf_counter() - start
 
         # Batched: batch_size=8
-        gen_batch = ContinuousBatchGenerator(
+        gen_batch = BatchGenerator(
             model=model,
             tokenizer=tokenizer,
             max_new_tokens=max_tokens,
@@ -346,7 +346,7 @@ class TestPerformance:
 
         timings = {}
         for bs in [1, 2, 4, 8]:
-            gen = ContinuousBatchGenerator(
+            gen = BatchGenerator(
                 model=model,
                 tokenizer=tokenizer,
                 max_new_tokens=max_tokens,

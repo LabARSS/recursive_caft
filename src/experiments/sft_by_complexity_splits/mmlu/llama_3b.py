@@ -77,7 +77,7 @@ for group, path in enumerate(paths):
                 for j in range(6)
             ],
             base_model_id=MODEL_NAME,
-            generation=GenerationConfig(max_new_tokens=1, max_batch_size=224),
+            generation=GenerationConfig(max_new_tokens=1, max_batch_size=204),
             summary_filename="summary_single_token.json",
         ),
         tokenizer=tokenizer,
@@ -107,7 +107,7 @@ for group, path in enumerate(paths):
                 for j in range(6)
             ],
             base_model_id=MODEL_NAME,
-            generation=GenerationConfig(max_new_tokens=8192, max_batch_size=64),
+            generation=GenerationConfig(max_new_tokens=8192, max_batch_size=204),
             summary_filename="summary_cot.json",
         ),
         tokenizer=tokenizer,

@@ -10,7 +10,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenize
 
 from core.datasets.qa_dataset import QADataset
 from core.datasets.qa_dataset_adapter import QADatasetAdapter
-from core.evaluation.continuous_batch_generator import ContinuousBatchGenerator
+from core.evaluation.continuous_batch_generator import BatchGenerator
 from core.utils.device import DEVICE_MAP
 from core.utils.logger import logger
 
@@ -85,7 +85,7 @@ class Evaluator:
             f"Evaluating {len(prompts)} samples with model from {self.config.model_path} for dataset {eval_dataset.dataset.dataset_id}..."
         )
 
-        generator = ContinuousBatchGenerator(
+        generator = BatchGenerator(
             model=model,
             tokenizer=tokenizer,
             max_new_tokens=self.config.generation.max_new_tokens,

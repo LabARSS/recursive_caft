@@ -23,16 +23,8 @@ class _Slot:
     index: int
     prompt_ids: list[int]
     prompt_len: int
-    batch_idx: int
     generated_ids: list[int] = field(default_factory=list)
     seq_position: int = 0  # total tokens seen = prompt_len + len(generated_ids)
-
-
-@dataclass
-class _PromotedSequence:
-    index: int  # position in results array
-    prompt_ids: list[int]  # original prompt tokens
-    generated_ids: list[int]  # tokens generated so far
 
 
 class _PrefillCacheView(DynamicCache):
@@ -133,11 +125,17 @@ class _PreAllocatedBatchCache(DynamicCache):
         return view
 
 
-class ContinuousBatchGenerator:
-    """Token-by-token generation with continuous batching via model.forward().
+class BatchGenerator:
+    """Token-by-token generation with static batching via model.forward().
 
-    Maintains a pool of active slots backed by a single pre-allocated KV cache.
-    Empty slots are filled from a queue of pending prompts.
+    Processes prompts in fixed-size chunks: prefill all one-by-one, then
+    decode the full chunk together until all slots finish or get promoted.
+    Batch size is set once per phase to avoid torch.compile recompilation.
+
+    Generation is split into phases of _PHASE_STEP tokens each. Unfinished
+    sequences are promoted to the next phase with a fresh, tighter cache.
+    Promotion is triggered at the batch level: when the batch has decoded
+    enough steps, all unfinished slots promote together.
 
     Prefill runs individually per prompt (no padding waste). Decode batches
     all active slots into a single forward() call using an attention mask to
@@ -154,7 +152,6 @@ class ContinuousBatchGenerator:
         temperature: float = 0.0,
         top_p: float = 1.0,
         top_k: int = -1,
-        group_scheduling: bool | None = None,
     ):
         self.model = model
         # Use uncompiled model for prefill, compiled for decode — mirrors HF generate().
@@ -170,17 +167,12 @@ class ContinuousBatchGenerator:
         self.temperature = temperature
         self.top_p = top_p
         self.top_k = top_k
-        # Enable phase-based group scheduling. Default: auto (on when max_new_tokens >= 1000).
-        if group_scheduling is None:
-            self.group_scheduling = max_new_tokens >= 1000
-        else:
-            self.group_scheduling = group_scheduling
 
         self.pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
         self.eos_token_id = tokenizer.eos_token_id
         self._effective_batch_size = max_batch_size
         self._cache = None
-        self._vram_safe_margin = 0.15  # reserve 15% of total VRAM as buffer
+        self._vram_safe_margin = 0.10  # reserve 10% of total VRAM as buffer
         self._vram_check_interval = 50  # periodic free-VRAM safety check every N decode steps
         self._vram_reduced_bs: int | None = None  # sticky reduced bs after VRAM pressure
 
@@ -251,25 +243,14 @@ class ContinuousBatchGenerator:
         free, total = torch.cuda.mem_get_info()
         return free < total * self._vram_safe_margin
 
-    def _force_requeue_active(
-        self,
-        active_slots: list[_Slot | None],
-        input_queue: deque[tuple[int, list[int], list[int]]],
-    ) -> None:
-        """Push all active slots back to input_queue for retry with reduced batch size."""
-        for i, slot in enumerate(active_slots):
-            if slot is None:
-                continue
-            prefill_ids = slot.prompt_ids + slot.generated_ids
-            input_queue.appendleft((slot.index, slot.prompt_ids, prefill_ids))
-            active_slots[i] = None
+    _PHASE_STEP = 1024  # max tokens generated per phase
 
     @torch.no_grad()
     def generate(self, prompts: list[list[int]]) -> GenerationResult:
-        """Generate responses for a list of prompts using continuous batching.
+        """Generate responses for a list of prompts using phased generation.
 
-        When group_scheduling is enabled, uses three sequential phases (fast, medium,
-        slow) to keep max_active_len low. Otherwise uses a single flat phase.
+        Generation is split into phases of _PHASE_STEP tokens each. Unfinished
+        sequences are promoted to the next phase with a fresh, tighter cache.
 
         Args:
             prompts: List of token ID sequences (one per sample).
@@ -278,104 +259,55 @@ class ContinuousBatchGenerator:
             GenerationResult with generated sequences and truncation stats.
         """
         results: list[list[int] | None] = [None] * len(prompts)
-        num_truncated = 0
         pbar = tqdm(total=len(prompts), desc="Generating")
         max_prompt_len = max(len(p) for p in prompts)
 
-        if not self.group_scheduling:
-            # Simple single-phase path (loop handles VRAM-driven re-queue)
-            input_queue: deque[tuple[int, list[int], list[int]]] = deque((i, p, p) for i, p in enumerate(prompts))
-            cache_len = max_prompt_len + self.max_new_tokens
-            while input_queue:
-                num_truncated += self._run_phase(input_queue, results, self.max_new_tokens, None, pbar, cache_len)
-        else:
-            num_truncated = self._generate_grouped(prompts, results, pbar, max_prompt_len)
-
-        pbar.close()
-        sequences = [r if r is not None else [] for r in results]
-        return GenerationResult(sequences=sequences, num_truncated=num_truncated, total=len(prompts))
-
-    _PHASE_STEP = 1024  # max tokens generated per phase
-
-    def _generate_grouped(
-        self,
-        prompts: list[list[int]],
-        results: list[list[int] | None],
-        pbar: tqdm,
-        max_prompt_len: int,
-    ) -> int:
-        """Phase-based group scheduling with dynamic phases (sequential).
-
-        Each phase generates up to _PHASE_STEP tokens. Sequences that haven't
-        finished are promoted to the next phase with a fresh, tighter cache.
-
-        Returns total num_truncated.
-        """
         input_queue: deque[tuple[int, list[int], list[int]]] = deque((i, p, p) for i, p in enumerate(prompts))
-        promote_queue: deque[_PromotedSequence] = deque()
+        max_total = max_prompt_len + self.max_new_tokens
+
         trunc = 0
         phase = 0
-        max_total = max_prompt_len + self.max_new_tokens
         total_threshold = min(self._PHASE_STEP, max_total)
 
         pbar.write(
-            f"[phase] Starting grouped generation: {len(input_queue)} prompts, "
+            f"[phase] Starting generation: {len(input_queue)} prompts, "
             f"phase_step={self._PHASE_STEP} max={self.max_new_tokens}"
         )
 
-        # First phase uses input_queue directly (loop handles VRAM-driven re-queue)
-        cache_len = max(total_threshold, max_prompt_len) + 1
         while input_queue:
-            trunc += self._run_phase(input_queue, results, total_threshold, promote_queue, pbar, cache_len)
-        phase += 1
-
-        # Subsequent phases process promoted sequences
-        while promote_queue:
-            total_threshold = min(self._PHASE_STEP * (phase + 1), max_total)
-            next_queue: deque[_PromotedSequence] = deque()
+            cache_len = max(total_threshold, max_prompt_len) + 1
+            promote_queue: deque[tuple[int, list[int], list[int]]] = deque()
             is_last = total_threshold >= max_total
-            trunc += self._run_promoted_phase(
-                promote_queue, results, total_threshold, None if is_last else next_queue, pbar, max_prompt_len
-            )
-            promote_queue = next_queue
+
+            while input_queue:
+                trunc += self._run_phase(
+                    input_queue, results, total_threshold, None if is_last else promote_queue, pbar, cache_len
+                )
+
+            if promote_queue:
+                pbar.write(f"[phase] Starting phase {phase + 1}: {len(promote_queue)} sequences, cache_len={cache_len}")
+            input_queue = promote_queue
             phase += 1
+            total_threshold = min(self._PHASE_STEP * (phase + 1), max_total)
 
-        return trunc
-
-    def _run_promoted_phase(
-        self,
-        promoted_queue: deque[_PromotedSequence],
-        results: list[list[int] | None],
-        total_threshold: int,
-        promote_queue: deque[_PromotedSequence] | None,
-        pbar: tqdm,
-        max_prompt_len: int,
-    ) -> int:
-        """Convert promoted sequences to input tuples and run a phase."""
-        if not promoted_queue:
-            return 0
-        input_queue: deque[tuple[int, list[int], list[int]]] = deque()
-        for ps in promoted_queue:
-            prefill_ids = ps.prompt_ids + ps.generated_ids
-            input_queue.append((ps.index, ps.prompt_ids, prefill_ids))
-        promoted_queue.clear()
-        cache_len = max(total_threshold, max_prompt_len) + 1
-        pbar.write(f"[phase] Starting phase: {len(input_queue)} sequences, cache_len={cache_len}")
-        trunc = 0
-        while input_queue:
-            trunc += self._run_phase(input_queue, results, total_threshold, promote_queue, pbar, cache_len)
-        return trunc
+        pbar.close()
+        sequences = [r if r is not None else [] for r in results]
+        return GenerationResult(sequences=sequences, num_truncated=trunc, total=len(prompts))
 
     def _run_phase(
         self,
         input_queue: deque[tuple[int, list[int], list[int]]],
         results: list[list[int] | None],
         total_threshold: int,
-        promote_queue: deque[_PromotedSequence] | None,
+        promote_queue: deque[tuple[int, list[int], list[int]]] | None,
         pbar: tqdm,
         max_cache_len: int,
     ) -> int:
-        """Run a complete phase: fill → decode → retire/promote until drained.
+        """Run a complete phase with static batching.
+
+        Processes prompts in fixed-size chunks: prefill all one-by-one, then
+        decode until the batch budget is exhausted or every slot finishes.
+        Batch size and cache are set once per phase.
 
         Returns the number of truncated sequences.
         """
@@ -394,86 +326,111 @@ class ContinuousBatchGenerator:
                 torch.cuda.empty_cache()
 
         self._cache = self._init_cache(max_cache_len, effective_bs)
-        self._valid_lens = [0] * effective_bs
-        active_slots: list[_Slot | None] = [None] * effective_bs
         num_truncated = 0
 
         step = 0
         step_time_sum = 0.0
 
-        while input_queue or any(s is not None for s in active_slots):
-            for slot_idx in range(effective_bs):
-                if active_slots[slot_idx] is not None or not input_queue:
-                    continue
+        while input_queue:
+            # --- Take a chunk of up to effective_bs prompts ---
+            chunk_slots: list[_Slot] = []
+            slot_cursor = 0
+            while input_queue and slot_cursor < effective_bs:
                 result_idx, prompt_ids, prefill_ids = input_queue.popleft()
                 # Skip prefill: promote immediately if already at/past threshold
                 if promote_queue is not None and len(prefill_ids) >= total_threshold:
-                    promote_queue.append(
-                        _PromotedSequence(
-                            index=result_idx,
-                            prompt_ids=prompt_ids,
-                            generated_ids=list(prefill_ids[len(prompt_ids) :]),
-                        )
-                    )
+                    promote_queue.append((result_idx, prompt_ids, prefill_ids))
                     continue
-                active_slots[slot_idx] = self._prefill(result_idx, prefill_ids, slot_idx, prompt_ids)
+                chunk_slots.append(_Slot(index=result_idx, prompt_ids=prompt_ids, prompt_len=len(prompt_ids)))
+                # Store prefill_ids temporarily for the prefill loop below
+                chunk_slots[-1]._prefill_ids = prefill_ids  # type: ignore[attr-defined]
+                slot_cursor += 1
 
-            occupied = [(i, s) for i, s in enumerate(active_slots) if s is not None]
-            if not occupied:
-                break
+            if not chunk_slots:
+                continue
 
-            slots_only = [s for _, s in occupied]
-            max_active_len = max(self._valid_lens[s.batch_idx] for s in slots_only)
-
-            step_start = time.perf_counter()
-            self._batched_decode(slots_only)
+            # --- Prefill each prompt one-by-one ---
+            self._valid_lens = [0] * effective_bs
+            prefill_start = time.perf_counter()
+            total_prefill_tokens = 0
+            for batch_idx, slot in enumerate(chunk_slots):
+                prefill_ids = slot._prefill_ids  # type: ignore[attr-defined]
+                total_prefill_tokens += len(prefill_ids)
+                self._prefill(slot, prefill_ids, batch_idx)
+                del slot._prefill_ids  # type: ignore[attr-defined]
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
-            step_time_sum += time.perf_counter() - step_start
+            prefill_time = time.perf_counter() - prefill_start
+            pbar.write(
+                f"[perf] Prefill: {len(chunk_slots)} prompts, {total_prefill_tokens} tokens, "
+                f"{prefill_time:.4f}s ({total_prefill_tokens / prefill_time:.0f} tok/s)"
+            )
 
-            if step % 200 == 0:
-                avg_step = step_time_sum / (step + 1)
-                pbar.write(
-                    f"[perf] phase step={step} active={len(occupied)} "
-                    f"max_active_len={max_active_len} avg_step={avg_step:.4f}s "
-                    f"queue={len(input_queue)}"
-                )
-            step += 1
+            # Compute batch-level phase budget: decode at most this many steps before promoting
+            max_prefill_len = max(self._valid_lens[i] for i in range(len(chunk_slots)))
+            phase_budget = total_threshold - max_prefill_len if promote_queue is not None else self.max_new_tokens
 
-            # Periodic safety net: abort phase if free VRAM is critically low
-            if torch.cuda.is_available() and step % self._vram_check_interval == 0:
-                if self._check_vram_pressure():
-                    self._vram_reduced_bs = max(effective_bs // 2, 1)
-                    pbar.write(
-                        f"[vram] Free VRAM critically low at step {step}. Aborting phase. Reducing batch size for next attempt: {effective_bs} -> {self._vram_reduced_bs}."
-                    )
-                    self._force_requeue_active(active_slots, input_queue)
+            finished: set[int] = set()
+            chunk_step = 0
+
+            # --- Decode until all slots in chunk are done or budget exhausted ---
+            while len(finished) < len(chunk_slots):
+                active = [(i, s) for i, s in enumerate(chunk_slots) if i not in finished]
+                if not active:
                     break
 
-            for slot_idx, slot in occupied:
-                last_token = slot.generated_ids[-1]
-                done = last_token == self.eos_token_id or len(slot.generated_ids) >= self.max_new_tokens
-                promote = (
-                    not done
-                    and promote_queue is not None
-                    and (slot.prompt_len + len(slot.generated_ids)) >= total_threshold
-                )
+                active_slots = [s for _, s in active]
+                active_indices = [i for i, _ in active]
+                max_active_len = max(self._valid_lens[i] for i in active_indices)
 
-                if done:
-                    if last_token != self.eos_token_id:
-                        num_truncated += 1
-                    results[slot.index] = slot.generated_ids
-                    active_slots[slot_idx] = None
-                    pbar.update(1)
-                elif promote and promote_queue is not None:
-                    promote_queue.append(
-                        _PromotedSequence(
-                            index=slot.index,
-                            prompt_ids=slot.prompt_ids,
-                            generated_ids=list(slot.generated_ids),
-                        )
+                step_start = time.perf_counter()
+                self._batched_decode(active_indices, active_slots)
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                step_time_sum += time.perf_counter() - step_start
+
+                if step % 200 == 0:
+                    avg_step = step_time_sum / (step + 1)
+                    pbar.write(
+                        f"[perf] phase step={step} active={len(active)} "
+                        f"max_active_len={max_active_len} avg_step={avg_step:.4f}s "
+                        f"queue={len(input_queue)}"
                     )
-                    active_slots[slot_idx] = None
+                step += 1
+                chunk_step += 1
+
+                # Periodic safety net: abort phase if free VRAM is critically low
+                if torch.cuda.is_available() and step % self._vram_check_interval == 0:
+                    if self._check_vram_pressure():
+                        self._vram_reduced_bs = max(effective_bs // 2, 1)
+                        pbar.write(
+                            f"[vram] Free VRAM critically low at step {step}. Aborting phase. "
+                            f"Reducing batch size for next attempt: {effective_bs} -> {self._vram_reduced_bs}."
+                        )
+                        for i, slot in enumerate(chunk_slots):
+                            if i not in finished:
+                                prefill_ids = slot.prompt_ids + slot.generated_ids
+                                input_queue.appendleft((slot.index, slot.prompt_ids, prefill_ids))
+                        break
+
+                # Check per-slot completion (EOS / max_new_tokens)
+                for batch_idx, slot in active:
+                    last_token = slot.generated_ids[-1]
+                    if last_token == self.eos_token_id or len(slot.generated_ids) >= self.max_new_tokens:
+                        if last_token != self.eos_token_id:
+                            num_truncated += 1
+                        results[slot.index] = slot.generated_ids
+                        finished.add(batch_idx)
+                        pbar.update(1)
+
+                # Batch-level promotion: budget exhausted → promote all remaining
+                if promote_queue is not None and chunk_step >= phase_budget:
+                    for batch_idx, slot in enumerate(chunk_slots):
+                        if batch_idx not in finished:
+                            prefill_ids = slot.prompt_ids + slot.generated_ids
+                            promote_queue.append((slot.index, slot.prompt_ids, prefill_ids))
+                            finished.add(batch_idx)
+                    break
 
         if step > 0:
             pbar.write(f"[perf] Phase done: {step} decode steps, avg_step={step_time_sum / step:.4f}s")
@@ -482,25 +439,21 @@ class ContinuousBatchGenerator:
 
     def _prefill(
         self,
-        prompt_idx: int,
+        slot: _Slot,
         prefill_ids: list[int],
         batch_idx: int,
-        original_prompt_ids: list[int] | None = None,
-    ) -> _Slot:
+    ) -> None:
         """Run the prefill forward pass to build KV cache and sample the first token.
 
         For promoted sequences, prefill_ids = original_prompt + previously_generated.
-        The returned slot's generated_ids includes the previously generated tokens
-        plus the newly sampled token, so the full generation history is preserved.
+        Updates slot.generated_ids in-place with prior generated tokens plus the newly
+        sampled token.
 
         Args:
-            prompt_idx: Index into the results array.
+            slot: The slot to populate (index and prompt_ids must already be set).
             prefill_ids: Token IDs to prefill (prompt + any previously generated tokens).
-            batch_idx: Which slot in the batch cache to use.
-            original_prompt_ids: The original prompt tokens (for promoted sequences).
-                If None, prefill_ids is used as the prompt.
+            batch_idx: Which row in the batch cache to use.
         """
-        prompt_ids = original_prompt_ids if original_prompt_ids is not None else prefill_ids
         device = self.model.device
         input_ids = torch.tensor([prefill_ids], device=device)
         seq_len = len(prefill_ids)
@@ -521,57 +474,54 @@ class ContinuousBatchGenerator:
         next_token = self._sample_token(outputs.logits[:, -1, :])
 
         # Preserve previously generated tokens for promoted sequences
-        prior_generated = list(prefill_ids[len(prompt_ids) :])
+        prior_generated = list(prefill_ids[len(slot.prompt_ids) :])
         prior_generated.append(next_token.item())
+        slot.generated_ids = prior_generated
+        slot.seq_position = seq_len + 1
 
-        return _Slot(
-            index=prompt_idx,
-            prompt_ids=prompt_ids,
-            prompt_len=len(prompt_ids),
-            batch_idx=batch_idx,
-            generated_ids=prior_generated,
-            seq_position=seq_len + 1,
-        )
-
-    def _batched_decode(self, slots: list[_Slot]) -> None:
+    def _batched_decode(self, batch_indices: list[int], slots: list[_Slot]) -> None:
         """Run a single batched decode step for all active slots.
 
         Each slot writes KV to its own cache position (no shared write + compact).
         Uses the pre-allocated cache — zero tensor allocations per step.
         Tensor batch dimension is sized to effective_batch_size (set per phase).
+
+        Args:
+            batch_indices: The batch row index for each slot.
+            slots: The active slots to decode (parallel to batch_indices).
         """
         device = self.model.device
 
         # max_active_len determines attention mask width and cache view size.
-        max_active_len = max(self._valid_lens[s.batch_idx] for s in slots)
+        max_active_len = max(self._valid_lens[i] for i in batch_indices)
         self._cache._active_seq_len = max_active_len
 
         # Set per-row cache positions so each slot writes KV at its own valid_len.
         bs = self._effective_batch_size
         per_row_positions = torch.zeros(bs, dtype=torch.long, device=device)
-        for slot in slots:
-            per_row_positions[slot.batch_idx] = self._valid_lens[slot.batch_idx]
+        for i in batch_indices:
+            per_row_positions[i] = self._valid_lens[i]
         self._cache._per_row_cache_positions = per_row_positions
 
         # Build input_ids [bs, 1]
         input_ids = torch.full((bs, 1), self.pad_token_id, dtype=torch.long, device=device)
-        for slot in slots:
-            input_ids[slot.batch_idx, 0] = slot.generated_ids[-1]
+        for i, slot in zip(batch_indices, slots):
+            input_ids[i, 0] = slot.generated_ids[-1]
 
         # Build attention_mask [bs, max_active_len + 1]
         attn_mask = torch.zeros(bs, max_active_len + 1, dtype=torch.long, device=device)
-        for slot in slots:
-            valid_len = self._valid_lens[slot.batch_idx]
-            attn_mask[slot.batch_idx, :valid_len] = 1  # valid cached positions
-            attn_mask[slot.batch_idx, valid_len] = 1  # new token position
+        for i in batch_indices:
+            valid_len = self._valid_lens[i]
+            attn_mask[i, :valid_len] = 1  # valid cached positions
+            attn_mask[i, valid_len] = 1  # new token position
 
         # cache_position: max_active_len for correct causal mask sizing
         cache_position = torch.tensor([max_active_len], device=device)
 
         # position_ids [bs, 1]
         position_ids = torch.zeros(bs, 1, dtype=torch.long, device=device)
-        for slot in slots:
-            position_ids[slot.batch_idx, 0] = slot.seq_position
+        for i, slot in zip(batch_indices, slots):
+            position_ids[i, 0] = slot.seq_position
 
         # Single forward() call — model writes new KV via per-row cache positions
         outputs = self._compiled_model(
@@ -584,11 +534,11 @@ class ContinuousBatchGenerator:
         )
 
         # Sample next token per slot and advance valid_lens
-        for slot in slots:
-            next_token = self._sample_token(outputs.logits[slot.batch_idx : slot.batch_idx + 1, -1, :])
+        for i, slot in zip(batch_indices, slots):
+            next_token = self._sample_token(outputs.logits[i : i + 1, -1, :])
             slot.generated_ids.append(next_token.item())
             slot.seq_position += 1
-            self._valid_lens[slot.batch_idx] += 1
+            self._valid_lens[i] += 1
 
     def _sample_token(self, logits: torch.Tensor) -> torch.Tensor:
         """Sample a single token from logits of shape [1, vocab_size]."""
@@ -615,3 +565,4 @@ class ContinuousBatchGenerator:
 
         probs = torch.softmax(logits, dim=-1)
         return torch.multinomial(probs, num_samples=1).squeeze(-1).squeeze(0)
+
