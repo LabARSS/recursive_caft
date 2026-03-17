@@ -27,6 +27,17 @@ class _Slot:
     seq_position: int = 0  # total tokens seen = prompt_len + len(generated_ids)
 
 
+@dataclass
+class _StagedSlot:
+    """Slot with KV cache staged on CPU."""
+
+    slot: _Slot
+    valid_len: int
+    # Per-layer CPU tensors: shape [1, num_kv_heads, valid_len, head_dim]
+    key_cache: list[torch.Tensor]
+    value_cache: list[torch.Tensor]
+
+
 class _PrefillCacheView(DynamicCache):
     """Lightweight cache view for prefill forward passes.
 
@@ -124,23 +135,31 @@ class _PreAllocatedBatchCache(DynamicCache):
         view.value_cache = [self.value_cache[i][batch_idx : batch_idx + 1] for i in range(len(self))]
         return view
 
+    def stage_row_to_cpu(self, batch_idx: int, valid_len: int) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+        """Copy one batch row's KV data to CPU tensors."""
+        keys = [self.key_cache[i][batch_idx : batch_idx + 1, :, :valid_len, :].cpu() for i in range(len(self))]
+        vals = [self.value_cache[i][batch_idx : batch_idx + 1, :, :valid_len, :].cpu() for i in range(len(self))]
+        return keys, vals
+
+    def restore_row_from_cpu(
+        self, batch_idx: int, valid_len: int, keys: list[torch.Tensor], vals: list[torch.Tensor]
+    ) -> None:
+        """Copy CPU-staged KV data back into a batch row on GPU."""
+        for i in range(len(self)):
+            self.key_cache[i][batch_idx, :, :valid_len, :] = keys[i][0].to(self.key_cache[i].device)
+            self.value_cache[i][batch_idx, :, :valid_len, :] = vals[i][0].to(self.value_cache[i].device)
+
 
 class BatchGenerator:
     """Token-by-token generation with static batching via model.forward().
 
-    Processes prompts in fixed-size chunks: prefill all one-by-one, then
-    decode the full chunk together until all slots finish or get promoted.
-    Batch size is set once per phase to avoid torch.compile recompilation.
+    All prompts are prefilled upfront (one-by-one) with KV cache staged on
+    CPU, producing a uniform queue of _StagedSlots. Decode phases then
+    restore slots to GPU, decode in batches, and re-stage promoted slots.
 
     Generation is split into phases of _PHASE_STEP tokens each. Unfinished
-    sequences are promoted to the next phase with a fresh, tighter cache.
-    Promotion is triggered at the batch level: when the batch has decoded
-    enough steps, all unfinished slots promote together.
-
-    Prefill runs individually per prompt (no padding waste). Decode batches
-    all active slots into a single forward() call using an attention mask to
-    ignore padded positions. The KV cache is updated in-place with zero
-    tensor allocations per decode step.
+    sequences are promoted to the next phase by staging their KV cache on
+    CPU — no re-prefill needed.
     """
 
     def __init__(
@@ -249,8 +268,9 @@ class BatchGenerator:
     def generate(self, prompts: list[list[int]]) -> GenerationResult:
         """Generate responses for a list of prompts using phased generation.
 
-        Generation is split into phases of _PHASE_STEP tokens each. Unfinished
-        sequences are promoted to the next phase with a fresh, tighter cache.
+        All prompts are prefilled upfront (one-by-one, batch_size=1) with KV
+        cache staged on CPU. Then decode phases restore slots to GPU, decode
+        in batches, and re-stage promoted slots to CPU for the next phase.
 
         Args:
             prompts: List of token ID sequences (one per sample).
@@ -261,34 +281,85 @@ class BatchGenerator:
         results: list[list[int] | None] = [None] * len(prompts)
         pbar = tqdm(total=len(prompts), desc="Generating")
         max_prompt_len = max(len(p) for p in prompts)
-
-        input_queue: deque[tuple[int, list[int], list[int]]] = deque((i, p, p) for i, p in enumerate(prompts))
         max_total = max_prompt_len + self.max_new_tokens
+        max_cache_len = max_total + 1
+
+        # --- Prefill all prompts upfront (batch_size=1 temp cache) ---
+        prefill_cache = self._init_cache(max_cache_len, 1)
+        slot_queue: deque[_StagedSlot] = deque()
+
+        prefill_start = time.perf_counter()
+        total_prefill_tokens = 0
+        for i, prompt_ids in enumerate(tqdm(prompts, desc="Prefilling", leave=False)):
+            slot = _Slot(index=i, prompt_ids=prompt_ids, prompt_len=len(prompt_ids))
+            self._cache = prefill_cache
+            self._valid_lens = [0]
+            self._prefill(slot, prompt_ids, 0)
+            total_prefill_tokens += len(prompt_ids)
+
+            # Stage KV to CPU
+            valid_len = self._valid_lens[0]
+            keys, vals = prefill_cache.stage_row_to_cpu(0, valid_len)
+            slot_queue.append(_StagedSlot(slot=slot, valid_len=valid_len, key_cache=keys, value_cache=vals))
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        prefill_time = time.perf_counter() - prefill_start
+        pbar.write(
+            f"[perf] Prefill: {len(prompts)} prompts, {total_prefill_tokens} tokens, "
+            f"{prefill_time:.4f}s ({total_prefill_tokens / prefill_time:.0f} tok/s)"
+        )
+
+        # Free prefill cache
+        self._cache = None
+        prefill_cache = None
+
+        # --- Phase loop ---
+        pbar.write(
+            f"[phase] Starting generation: {len(slot_queue)} prompts, "
+            f"phase_step={self._PHASE_STEP} max={self.max_new_tokens}"
+        )
 
         trunc = 0
         phase = 0
         total_threshold = min(self._PHASE_STEP, max_total)
 
-        pbar.write(
-            f"[phase] Starting generation: {len(input_queue)} prompts, "
-            f"phase_step={self._PHASE_STEP} max={self.max_new_tokens}"
-        )
-
-        while input_queue:
-            cache_len = max(total_threshold, max_prompt_len) + 1
-            promote_queue: deque[tuple[int, list[int], list[int]]] = deque()
+        while True:
             is_last = total_threshold >= max_total
+            promote_queue: deque[_StagedSlot] = deque()
 
-            while input_queue:
+            pbar.write(
+                f"[phase] Starting phase {phase + 1}: {len(promote_queue)} sequences, total_threshold={total_threshold}"
+            )
+
+            trunc += self._run_phase(
+                slot_queue,
+                results,
+                total_threshold,
+                None if is_last else promote_queue,
+                pbar,
+                max_cache_len,
+            )
+            # Retry loop: VRAM pressure can abort a phase and re-queue items
+            while slot_queue:
                 trunc += self._run_phase(
-                    input_queue, results, total_threshold, None if is_last else promote_queue, pbar, cache_len
+                    slot_queue,
+                    results,
+                    total_threshold,
+                    None if is_last else promote_queue,
+                    pbar,
+                    max_cache_len,
                 )
 
-            if promote_queue:
-                pbar.write(f"[phase] Starting phase {phase + 1}: {len(promote_queue)} sequences, cache_len={cache_len}")
-            input_queue = promote_queue
+            self._cache = None
+
+            if not promote_queue:
+                break
+
+            slot_queue = promote_queue
             phase += 1
             total_threshold = min(self._PHASE_STEP * (phase + 1), max_total)
+            pbar.write(f"[phase] Phase {phase}: {len(slot_queue)} sequences promoted")
 
         pbar.close()
         sequences = [r if r is not None else [] for r in results]
@@ -296,25 +367,25 @@ class BatchGenerator:
 
     def _run_phase(
         self,
-        input_queue: deque[tuple[int, list[int], list[int]]],
+        slot_queue: deque[_StagedSlot],
         results: list[list[int] | None],
         total_threshold: int,
-        promote_queue: deque[tuple[int, list[int], list[int]]] | None,
+        promote_queue: deque[_StagedSlot] | None,
         pbar: tqdm,
         max_cache_len: int,
     ) -> int:
         """Run a complete phase with static batching.
 
-        Processes prompts in fixed-size chunks: prefill all one-by-one, then
-        decode until the batch budget is exhausted or every slot finishes.
-        Batch size and cache are set once per phase.
+        Pops staged slots from slot_queue, restores KV from CPU → GPU,
+        decodes until done or budget exhausted, stages promoted slots back
+        to CPU.
 
         Returns the number of truncated sequences.
         """
         self._cache = None
 
         max_bs = self._vram_reduced_bs if self._vram_reduced_bs is not None else self.max_batch_size
-        effective_bs = min(len(input_queue), max_bs)
+        effective_bs = min(len(slot_queue), max_bs)
         if effective_bs != self._effective_batch_size:
             pbar.write(
                 f"[perf] Adjusting batch size: {self._effective_batch_size} → {effective_bs}. torch.compile will take time."
@@ -325,50 +396,34 @@ class BatchGenerator:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
+        pbar.write(f"[phase] Effective batch size: {self._effective_batch_size}")
+
         self._cache = self._init_cache(max_cache_len, effective_bs)
         num_truncated = 0
 
         step = 0
         step_time_sum = 0.0
 
-        while input_queue:
-            # --- Take a chunk of up to effective_bs prompts ---
+        while slot_queue:
+            # --- Take a chunk of up to effective_bs slots ---
             chunk_slots: list[_Slot] = []
-            slot_cursor = 0
-            while input_queue and slot_cursor < effective_bs:
-                result_idx, prompt_ids, prefill_ids = input_queue.popleft()
-                # Skip prefill: promote immediately if already at/past threshold
-                if promote_queue is not None and len(prefill_ids) >= total_threshold:
-                    promote_queue.append((result_idx, prompt_ids, prefill_ids))
-                    continue
-                chunk_slots.append(_Slot(index=result_idx, prompt_ids=prompt_ids, prompt_len=len(prompt_ids)))
-                # Store prefill_ids temporarily for the prefill loop below
-                chunk_slots[-1]._prefill_ids = prefill_ids  # type: ignore[attr-defined]
-                slot_cursor += 1
-
-            if not chunk_slots:
-                continue
-
-            # --- Prefill each prompt one-by-one ---
             self._valid_lens = [0] * effective_bs
-            prefill_start = time.perf_counter()
-            total_prefill_tokens = 0
-            for batch_idx, slot in enumerate(chunk_slots):
-                prefill_ids = slot._prefill_ids  # type: ignore[attr-defined]
-                total_prefill_tokens += len(prefill_ids)
-                self._prefill(slot, prefill_ids, batch_idx)
-                del slot._prefill_ids  # type: ignore[attr-defined]
+
+            restore_start = time.perf_counter()
+            while slot_queue and len(chunk_slots) < effective_bs:
+                staged = slot_queue.popleft()
+                batch_idx = len(chunk_slots)
+                self._cache.restore_row_from_cpu(batch_idx, staged.valid_len, staged.key_cache, staged.value_cache)
+                self._valid_lens[batch_idx] = staged.valid_len
+                chunk_slots.append(staged.slot)
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
-            prefill_time = time.perf_counter() - prefill_start
-            pbar.write(
-                f"[perf] Prefill: {len(chunk_slots)} prompts, {total_prefill_tokens} tokens, "
-                f"{prefill_time:.4f}s ({total_prefill_tokens / prefill_time:.0f} tok/s)"
-            )
+            restore_time = time.perf_counter() - restore_start
+            pbar.write(f"[perf] Restored {len(chunk_slots)} slots from CPU in {restore_time:.4f}s")
 
-            # Compute batch-level phase budget: decode at most this many steps before promoting
-            max_prefill_len = max(self._valid_lens[i] for i in range(len(chunk_slots)))
-            phase_budget = total_threshold - max_prefill_len if promote_queue is not None else self.max_new_tokens
+            # Compute batch-level phase budget
+            max_valid_len = max(self._valid_lens[i] for i in range(len(chunk_slots)))
+            phase_budget = total_threshold - max_valid_len if promote_queue is not None else self.max_new_tokens
 
             finished: set[int] = set()
             chunk_step = 0
@@ -394,7 +449,7 @@ class BatchGenerator:
                     pbar.write(
                         f"[perf] phase step={step} active={len(active)} "
                         f"max_active_len={max_active_len} avg_step={avg_step:.4f}s "
-                        f"queue={len(input_queue)}"
+                        f"queue={len(slot_queue)}"
                     )
                 step += 1
                 chunk_step += 1
@@ -407,10 +462,19 @@ class BatchGenerator:
                             f"[vram] Free VRAM critically low at step {step}. Aborting phase. "
                             f"Reducing batch size for next attempt: {effective_bs} -> {self._vram_reduced_bs}."
                         )
+                        # Stage active slots back to CPU and re-queue
                         for i, slot in enumerate(chunk_slots):
                             if i not in finished:
-                                prefill_ids = slot.prompt_ids + slot.generated_ids
-                                input_queue.appendleft((slot.index, slot.prompt_ids, prefill_ids))
+                                valid_len = self._valid_lens[i]
+                                keys, vals = self._cache.stage_row_to_cpu(i, valid_len)
+                                slot_queue.appendleft(
+                                    _StagedSlot(
+                                        slot=slot,
+                                        valid_len=valid_len,
+                                        key_cache=keys,
+                                        value_cache=vals,
+                                    )
+                                )
                         break
 
                 # Check per-slot completion (EOS / max_new_tokens)
@@ -423,12 +487,20 @@ class BatchGenerator:
                         finished.add(batch_idx)
                         pbar.update(1)
 
-                # Batch-level promotion: budget exhausted → promote all remaining
+                # Batch-level promotion: budget exhausted → stage all remaining to CPU
                 if promote_queue is not None and chunk_step >= phase_budget:
                     for batch_idx, slot in enumerate(chunk_slots):
                         if batch_idx not in finished:
-                            prefill_ids = slot.prompt_ids + slot.generated_ids
-                            promote_queue.append((slot.index, slot.prompt_ids, prefill_ids))
+                            valid_len = self._valid_lens[batch_idx]
+                            keys, vals = self._cache.stage_row_to_cpu(batch_idx, valid_len)
+                            promote_queue.append(
+                                _StagedSlot(
+                                    slot=slot,
+                                    valid_len=valid_len,
+                                    key_cache=keys,
+                                    value_cache=vals,
+                                )
+                            )
                             finished.add(batch_idx)
                     break
 
@@ -445,13 +517,11 @@ class BatchGenerator:
     ) -> None:
         """Run the prefill forward pass to build KV cache and sample the first token.
 
-        For promoted sequences, prefill_ids = original_prompt + previously_generated.
-        Updates slot.generated_ids in-place with prior generated tokens plus the newly
-        sampled token.
+        Updates slot.generated_ids in-place with the newly sampled token.
 
         Args:
             slot: The slot to populate (index and prompt_ids must already be set).
-            prefill_ids: Token IDs to prefill (prompt + any previously generated tokens).
+            prefill_ids: Token IDs to prefill.
             batch_idx: Which row in the batch cache to use.
         """
         device = self.model.device
@@ -472,11 +542,7 @@ class BatchGenerator:
         self._valid_lens[batch_idx] = seq_len
 
         next_token = self._sample_token(outputs.logits[:, -1, :])
-
-        # Preserve previously generated tokens for promoted sequences
-        prior_generated = list(prefill_ids[len(slot.prompt_ids) :])
-        prior_generated.append(next_token.item())
-        slot.generated_ids = prior_generated
+        slot.generated_ids = [next_token.item()]
         slot.seq_position = seq_len + 1
 
     def _batched_decode(self, batch_indices: list[int], slots: list[_Slot]) -> None:
@@ -565,4 +631,3 @@ class BatchGenerator:
 
         probs = torch.softmax(logits, dim=-1)
         return torch.multinomial(probs, num_samples=1).squeeze(-1).squeeze(0)
-
