@@ -21,7 +21,10 @@ Other datasets are included in the repo and also published on Huggingface:
 
 ## Running experiments
 
-`uv run src/experiments/REPLACE_ME.py`
+1. Install dependencies `uv sync`
+      1. If you want to run evals, you will need to also build flash attention from source or download pre-built biaries 
+      2. Without pre-built binaries `uv sync --extra evals` and with them `uv sync --extra evals --find-links ./artifacts/wheels`
+2. `uv run src/experiments/REPLACE_ME.py`
 
 ## Cite
 
