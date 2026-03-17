@@ -325,31 +325,20 @@ class BatchGenerator:
         total_threshold = min(self._PHASE_STEP, max_total)
 
         while True:
-            is_last = total_threshold >= max_total
             promote_queue: deque[_StagedSlot] = deque()
 
             pbar.write(
-                f"[phase] Starting phase {phase + 1}: {len(promote_queue)} sequences, total_threshold={total_threshold}"
+                f"[phase] Starting phase {phase + 1}: {len(slot_queue)} sequences, total_threshold={total_threshold}"
             )
 
             trunc += self._run_phase(
                 slot_queue,
                 results,
                 total_threshold,
-                None if is_last else promote_queue,
+                promote_queue,
                 pbar,
                 max_cache_len,
             )
-            # Retry loop: VRAM pressure can abort a phase and re-queue items
-            while slot_queue:
-                trunc += self._run_phase(
-                    slot_queue,
-                    results,
-                    total_threshold,
-                    None if is_last else promote_queue,
-                    pbar,
-                    max_cache_len,
-                )
 
             self._cache = None
 
@@ -370,7 +359,7 @@ class BatchGenerator:
         slot_queue: deque[_StagedSlot],
         results: list[list[int] | None],
         total_threshold: int,
-        promote_queue: deque[_StagedSlot] | None,
+        promote_queue: deque[_StagedSlot],
         pbar: tqdm,
         max_cache_len: int,
     ) -> int:
@@ -411,6 +400,11 @@ class BatchGenerator:
 
             restore_start = time.perf_counter()
             while slot_queue and len(chunk_slots) < effective_bs:
+                if slot_queue[0].valid_len >= total_threshold and slot_queue[0].valid_len < max_cache_len:
+                    staged = slot_queue.popleft()
+                    promote_queue.append(staged)
+                    continue
+
                 staged = slot_queue.popleft()
                 batch_idx = len(chunk_slots)
                 self._cache.restore_row_from_cpu(batch_idx, staged.valid_len, staged.key_cache, staged.value_cache)
@@ -421,9 +415,12 @@ class BatchGenerator:
             restore_time = time.perf_counter() - restore_start
             pbar.write(f"[perf] Restored {len(chunk_slots)} slots from CPU in {restore_time:.4f}s")
 
+            if not chunk_slots:
+                continue
+
             # Compute batch-level phase budget
             max_valid_len = max(self._valid_lens[i] for i in range(len(chunk_slots)))
-            phase_budget = total_threshold - max_valid_len if promote_queue is not None else self.max_new_tokens
+            phase_budget = total_threshold - max_valid_len
 
             finished: set[int] = set()
             chunk_step = 0
@@ -467,7 +464,7 @@ class BatchGenerator:
                             if i not in finished:
                                 valid_len = self._valid_lens[i]
                                 keys, vals = self._cache.stage_row_to_cpu(i, valid_len)
-                                slot_queue.appendleft(
+                                promote_queue.appendleft(
                                     _StagedSlot(
                                         slot=slot,
                                         valid_len=valid_len,
@@ -488,7 +485,7 @@ class BatchGenerator:
                         pbar.update(1)
 
                 # Batch-level promotion: budget exhausted → stage all remaining to CPU
-                if promote_queue is not None and chunk_step >= phase_budget:
+                if chunk_step >= phase_budget:
                     for batch_idx, slot in enumerate(chunk_slots):
                         if batch_idx not in finished:
                             valid_len = self._valid_lens[batch_idx]
