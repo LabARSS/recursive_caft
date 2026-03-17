@@ -282,10 +282,9 @@ class BatchGenerator:
         pbar = tqdm(total=len(prompts), desc="Generating")
         max_prompt_len = max(len(p) for p in prompts)
         max_total = max_prompt_len + self.max_new_tokens
-        max_cache_len = max_total + 1
 
         # --- Prefill all prompts upfront (batch_size=1 temp cache) ---
-        prefill_cache = self._init_cache(max_cache_len, 1)
+        prefill_cache = self._init_cache(max_prompt_len + 1, 1)
         slot_queue: deque[_StagedSlot] = deque()
 
         prefill_start = time.perf_counter()
@@ -337,7 +336,7 @@ class BatchGenerator:
                 total_threshold,
                 promote_queue,
                 pbar,
-                max_cache_len,
+                total_threshold + 1,
             )
 
             self._cache = None
