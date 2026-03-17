@@ -330,13 +330,9 @@ class BatchGenerator:
                 f"[phase] Starting phase {phase + 1}: {len(slot_queue)} sequences, total_threshold={total_threshold}"
             )
 
+            is_last = total_threshold >= max_total
             trunc += self._run_phase(
-                slot_queue,
-                results,
-                total_threshold,
-                promote_queue,
-                pbar,
-                total_threshold + 1,
+                slot_queue, results, total_threshold, promote_queue, pbar, total_threshold + 1, is_last
             )
 
             self._cache = None
@@ -361,6 +357,7 @@ class BatchGenerator:
         promote_queue: deque[_StagedSlot],
         pbar: tqdm,
         max_cache_len: int,
+        is_last: bool,
     ) -> int:
         """Run a complete phase with static batching.
 
@@ -391,6 +388,7 @@ class BatchGenerator:
 
         step = 0
         step_time_sum = 0.0
+        early_promoted = 0
 
         while slot_queue:
             # --- Take a chunk of up to effective_bs slots ---
@@ -399,11 +397,10 @@ class BatchGenerator:
 
             restore_start = time.perf_counter()
             while slot_queue and len(chunk_slots) < effective_bs:
-                if slot_queue[0].valid_len >= total_threshold:
+                if not is_last and (slot_queue[0].valid_len - self._PHASE_STEP * 0.1) >= total_threshold:
                     staged = slot_queue.popleft()
-
-                    if len(staged.slot.generated_ids) < self.max_new_tokens:
-                        promote_queue.append(staged)
+                    promote_queue.append(staged)
+                    early_promoted += 1
                     continue
 
                 staged = slot_queue.popleft()
@@ -415,6 +412,9 @@ class BatchGenerator:
                 torch.cuda.synchronize()
             restore_time = time.perf_counter() - restore_start
             pbar.write(f"[perf] Restored {len(chunk_slots)} slots from CPU in {restore_time:.4f}s")
+
+            if early_promoted > 0:
+                pbar.write(f"[phase] Early promoted {early_promoted} slots that exceeded the phase budget")
 
             if not chunk_slots:
                 continue
