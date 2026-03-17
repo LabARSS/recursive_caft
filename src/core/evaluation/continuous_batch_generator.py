@@ -399,9 +399,11 @@ class BatchGenerator:
 
             restore_start = time.perf_counter()
             while slot_queue and len(chunk_slots) < effective_bs:
-                if slot_queue[0].valid_len >= total_threshold and slot_queue[0].valid_len < max_cache_len:
+                if slot_queue[0].valid_len >= total_threshold:
                     staged = slot_queue.popleft()
-                    promote_queue.append(staged)
+
+                    if len(staged.slot.generated_ids) < self.max_new_tokens:
+                        promote_queue.append(staged)
                     continue
 
                 staged = slot_queue.popleft()
