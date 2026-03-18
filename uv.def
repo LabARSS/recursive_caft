@@ -1,5 +1,5 @@
 Bootstrap: docker
-From: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+From: ghcr.io/astral-sh/uv:python3.13-trixie-slim
 
 %post
     # Update and install packages
