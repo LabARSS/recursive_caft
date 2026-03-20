@@ -10,7 +10,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenize
 
 from core.datasets.qa_dataset import QADataset
 from core.datasets.qa_dataset_adapter import QADatasetAdapter
-from core.evaluation.continuous_batch_generator import BatchGenerator
+from core.evaluation.phased_batch_generator import BatchGenerator
 from core.utils.device import DEVICE_MAP
 from core.utils.logger import logger
 

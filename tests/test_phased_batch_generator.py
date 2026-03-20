@@ -15,7 +15,7 @@ import pytest
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from core.evaluation.continuous_batch_generator import BatchGenerator
+from core.evaluation.phased_batch_generator import BatchGenerator
 
 MODEL_ID = "sshleifer/tiny-gpt2"
 MAX_NEW_TOKENS = 20
