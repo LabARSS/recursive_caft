@@ -26,17 +26,6 @@ def single_token_sys_prompt_with_thinking(subject: str | None = None):
     return sys_msg
 
 
-def single_token_sys_prompt_with_answer_first_thinking(subject: str | None = None):
-    if subject is not None:
-        sys_msg = f"The following are multiple choice questions about {subject}."
-    else:
-        sys_msg = "The following are multiple choice questions."
-    sys_msg += (
-        " First answer with the correct option letter only."
-        f" Then think step by step inside {THINKING_START}...{THINKING_END} tags."
-    )
-    return sys_msg
-
 
 def single_token_sys_prompt_with_fallback_for_unknown_answers(subject: str | None = None):
     if subject is not None:

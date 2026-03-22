@@ -59,8 +59,5 @@ class LoRATrainer(BaseTrainer[LoRATrainerConfig]):
                 use_rslora=self.config.lora_training_args.use_rslora,
             )
             self._model = get_peft_model(model, peft_config)
-            if self.config.training_args.gradient_checkpointing:
-                self._model.enable_input_require_grads()
-                self._model.config.use_cache = False
 
         return self._model

@@ -40,7 +40,6 @@ class AbstractDatasetAdapter[D: BaseDataset](ABC):
             lambda row: self.process_row(row).model_dump(),
             num_proc=4,
             remove_columns=ds.column_names,
-            load_from_cache_file=False,
         )
 
         return processed_ds
