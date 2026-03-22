@@ -74,7 +74,7 @@ def main():
                 "options": str(opts_list),
                 "answer": inp["gold"],
                 "thinking": thinking,
-                "subject": inp.get("subject", ""),
+                "base_cluster": inp.get("subject", ""),
                 "question_id": inp["question_id"],
             })
 

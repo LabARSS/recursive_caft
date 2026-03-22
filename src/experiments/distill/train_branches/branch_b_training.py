@@ -39,6 +39,8 @@ def run_branch_b_training(
 ):
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
     tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.thinking_start_token = "<think>"
+    tokenizer.thinking_end_token = "</think>"
 
     train_data_path = (
         PROJECT_ROOT
