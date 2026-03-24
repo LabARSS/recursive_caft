@@ -120,6 +120,7 @@ def run_branch_b_training(
             generation=GenerationConfig(
                 max_new_tokens=cot_eval_max_new_tokens,
                 max_batch_size=cot_eval_max_batch_size,
+                attn_implementation="sdpa",
             ),
             summary_filename="summary_cot.json",
         ),
