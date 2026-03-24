@@ -194,6 +194,7 @@ class BatchGenerator:
         self._vram_safe_margin = 0.10  # reserve 10% of total VRAM as buffer
         self._vram_check_interval = 50  # periodic free-VRAM safety check every N decode steps
         self._vram_reduced_bs: int | None = None  # sticky reduced bs after VRAM pressure
+        self._usable_vram: int | None = None  # measured once after prefill
 
         self._patch_causal_mask(self._uncompiled_model)
 
@@ -262,6 +263,56 @@ class BatchGenerator:
         free, total = torch.cuda.mem_get_info()
         return free < total * self._vram_safe_margin
 
+    def _estimate_cache_bytes(self, max_cache_len: int, batch_size: int) -> int:
+        """Estimate GPU memory (bytes) needed for a KV cache allocation."""
+        config = self.model.config
+        num_layers = config.num_hidden_layers
+        num_kv_heads = getattr(config, "num_key_value_heads", None) or config.num_attention_heads
+        head_dim = getattr(config, "head_dim", None) or config.hidden_size // config.num_attention_heads
+        element_size = torch.tensor([], dtype=self.model.dtype).element_size()
+        # Per layer: 2 tensors (K + V), each of shape (batch_size, num_kv_heads, max_cache_len, head_dim)
+        per_layer = 2 * batch_size * num_kv_heads * max_cache_len * head_dim * element_size
+        return num_layers * per_layer
+
+    def _fit_batch_size_to_vram(self, max_cache_len: int, batch_size: int, pbar: tqdm) -> int:
+        """Reduce batch_size until the estimated KV cache fits in usable VRAM.
+
+        Uses self._usable_vram (measured once after prefill). Pure math, no
+        CUDA queries. No-ops if _usable_vram was not measured (CPU-only).
+        """
+        if self._usable_vram is None:
+            return batch_size
+
+        while batch_size >= 1:
+            needed = self._estimate_cache_bytes(max_cache_len, batch_size)
+            if needed <= self._usable_vram:
+                return batch_size
+            if batch_size == 1:
+                break
+            new_bs = max(batch_size // 2, 1)
+            pbar.write(
+                f"[vram] Cache for bs={batch_size}, seq_len={max_cache_len} needs "
+                f"{needed / 1e9:.2f} GB but only {self._usable_vram / 1e9:.2f} GB usable. "
+                f"Reducing batch size to {new_bs}."
+            )
+            batch_size = new_bs
+
+        needed = self._estimate_cache_bytes(max_cache_len, 1)
+        raise RuntimeError(
+            f"[vram] KV cache for batch_size=1, seq_len={max_cache_len} requires "
+            f"{needed / 1e9:.2f} GB but only {self._usable_vram / 1e9:.2f} GB is available. "
+            f"Cannot proceed."
+        )
+
+    def _measure_usable_vram(self) -> None:
+        """Measure free VRAM once and store as self._usable_vram."""
+        if not torch.cuda.is_available():
+            return
+        gc.collect()
+        torch.cuda.empty_cache()
+        free, total = torch.cuda.mem_get_info()
+        self._usable_vram = free - int(total * self._vram_safe_margin)
+
     _PHASE_STEP = 1024  # max tokens generated per phase
 
     @torch.no_grad()
@@ -312,6 +363,7 @@ class BatchGenerator:
         # Free prefill cache
         self._cache = None
         prefill_cache = None
+        self._measure_usable_vram()
 
         # --- Phase loop ---
         pbar.write(
@@ -371,6 +423,10 @@ class BatchGenerator:
 
         max_bs = self._vram_reduced_bs if self._vram_reduced_bs is not None else self.max_batch_size
         effective_bs = min(len(slot_queue), max_bs)
+
+        # Pre-allocation VRAM check: reduce batch size until cache fits (pure math)
+        effective_bs = self._fit_batch_size_to_vram(max_cache_len, effective_bs, pbar)
+
         if effective_bs != self._effective_batch_size:
             pbar.write(
                 f"[perf] Adjusting batch size: {self._effective_batch_size} → {effective_bs}. torch.compile will take time."
