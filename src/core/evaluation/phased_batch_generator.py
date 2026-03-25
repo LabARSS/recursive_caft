@@ -453,7 +453,7 @@ class BatchGenerator:
 
             restore_start = time.perf_counter()
             while slot_queue and len(chunk_slots) < effective_bs:
-                if not is_last and (slot_queue[0].valid_len - self._PHASE_STEP * 0.1) >= total_threshold:
+                if not is_last and slot_queue[0].valid_len >= (total_threshold - self._PHASE_STEP * 0.1):
                     staged = slot_queue.popleft()
                     promote_queue.append(staged)
                     early_promoted += 1
