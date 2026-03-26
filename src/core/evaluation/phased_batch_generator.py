@@ -529,6 +529,8 @@ class BatchGenerator:
                                         value_cache=vals,
                                     )
                                 )
+                        while slot_queue:
+                            promote_queue.append(slot_queue.popleft())
                         break
 
                 # Check per-slot completion (EOS / max_new_tokens)
