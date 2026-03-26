@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 from datasets import Dataset, load_dataset, load_from_disk
 from pydantic import BaseModel
 
+from core.dataset_samplers.abstract_sampler import AbstractDatasetSampler
 from core.datasets.base_dataset import BaseDataset
 
 
@@ -16,8 +17,9 @@ class TokenizedRow(BaseModel):
 
 
 class AbstractDatasetAdapter[D: BaseDataset](ABC):
-    def __init__(self, dataset: D):
+    def __init__(self, dataset: D, dataset_sampler: AbstractDatasetSampler | None = None):
         self.dataset = dataset
+        self.dataset_sampler = dataset_sampler
 
     @abstractmethod
     def process_row(self, row: dict) -> TokenizedRow: ...
@@ -35,6 +37,9 @@ class AbstractDatasetAdapter[D: BaseDataset](ABC):
 
     def process_dataset(self, path_override: str | None = None) -> Dataset:
         ds = self._load_ds(path_override)
+
+        if self.dataset_sampler is not None:
+            ds = self.dataset_sampler.create_sample(ds)
 
         processed_ds = ds.map(
             lambda row: self.process_row(row).model_dump(),
