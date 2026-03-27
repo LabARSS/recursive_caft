@@ -1,38 +1,37 @@
-from pydraconf import PydraConfig
+from typing import override
 
-from core.complexity_estimation.complexity_estimation_runner import ComplexityEstimationRunner
-from core.training.lora_trainer import LoRATrainer, LoRATrainerConfig, LoRATrainingArgs
+from core.complexity_estimation.complexity_estimation_runner import (
+    BaseComplexityEstimator,
+    ComplexityEstimationRunner,
+    ComplexityEstimationRunnerConfig,
+    ModelGenerateConfig,
+    QADatasetAdapter,
+)
+from core.training.lora_trainer import LoRATrainer, LoRATrainerConfig
 from core.utils.logger import logger
 
 
-class ResamplingTrainerConfig(PydraConfig):
-    training_args: LoRATrainingArgs
+class ResamplingTrainerConfig(LoRATrainerConfig):
+    complexity_evaluation_dataset: QADatasetAdapter
+    complexity_estimator: BaseComplexityEstimator
 
 
-class ResamplingTrainer:
-    def __init__(self, config: ResamplingTrainerConfig, tokenizer):
-        self.config = config
-        self.tokenizer = tokenizer
+class ResamplingTrainer(LoRATrainer[ResamplingTrainerConfig]):
+    def _estimate_complexity_for_epoch(self, epoch: int):
+        logger.info(f"Estimating complexity for epoch {epoch + 1}...")
 
-    def train(self):
-        for epoch in range(self.config.training_args.num_train_epochs):
-            logger.info(f"Epoch {epoch + 1}/{self.config.training_args.num_train_epochs}...")
+        ComplexityEstimationRunner(
+            config=ComplexityEstimationRunnerConfig(
+                out_path=self._path_for_epoch(epoch).as_posix(),
+                answer_field_name="estimation_phase_answer",
+                answer_correctness_field_name="estimation_phase_answer_correctness",
+                generate_config=ModelGenerateConfig(max_new_tokens=1),
+            ),
+            complexity_estimator=self.config.complexity_estimator,
+        ).estimate(dataset_adapter=self.config.complexity_evaluation_dataset, model=self._trainer.model)
 
-            # TODO: build tmp dataset with teacher entropy
+    @override
+    def _prepare_data(self): ...
 
-            logger.info("Estimating complexity...")
-            ComplexityEstimationRunner().estimate()
-
-            logger.info("Training...")
-            trainer = LoRATrainer(
-                config=LoRATrainerConfig(
-                    out_path=f"{self.config.out_path}/epoch_{epoch + 1}",
-                    model_id=self.config.model_id,
-                    train_dataset=self.config.train_dataset,
-                    training_args=self.config.training_args,
-                    lora_training_args=self.config.lora_training_args,
-                ),
-                tokenizer=self.tokenizer,
-            )
-            trainer.train()
-            trainer.unload()
+    @override
+    def _build_trainer(self, train_ds): ...

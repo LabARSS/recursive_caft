@@ -3,6 +3,7 @@ from typing import Literal, override
 from peft import LoraConfig, TaskType, get_peft_model
 from pydantic import BaseModel, Field
 from transformers import AutoModelForCausalLM
+from transformers.modeling_utils import PreTrainedModel
 
 from core.training.base_trainer import BaseTrainer, BaseTrainerConfig, BaseTrainingArgs
 
@@ -42,10 +43,10 @@ class LoRATrainerConfig(BaseTrainerConfig[LoRATrainingArgs]):
     lora_training_args: LoRASpecificTrainingArgs = Field(default_factory=LoRASpecificTrainingArgs)
 
 
-class LoRATrainer(BaseTrainer[LoRATrainerConfig]):
+class LoRATrainer[TConfig: LoRATrainerConfig = LoRATrainerConfig](BaseTrainer[TConfig]):
     @property
     @override
-    def model(self):
+    def model(self) -> PreTrainedModel:
         if not self._model:
             model = AutoModelForCausalLM.from_pretrained(self.config.model_id)
             peft_config = LoraConfig(
@@ -60,4 +61,5 @@ class LoRATrainer(BaseTrainer[LoRATrainerConfig]):
             )
             self._model = get_peft_model(model, peft_config)
 
+        assert self._model is not None
         return self._model

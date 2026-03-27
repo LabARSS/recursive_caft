@@ -31,7 +31,7 @@ class AbstractDatasetAdapter[D: BaseDataset](ABC):
 
         ds = load_dataset(
             "parquet",
-            data_files={"default": self.dataset.config.path},
+            data_files={"default": self.dataset.processed_path},
         )
         return ds["default"]
 
