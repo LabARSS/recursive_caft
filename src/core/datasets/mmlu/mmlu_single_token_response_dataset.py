@@ -41,6 +41,10 @@ class MMLUSingleTokenResponseDataset(QADataset[QADatasetConfig]):
     def verify_assistant_response(self, row: dict, assistant_response: str) -> tuple[str, bool]:
         parsed_answer = assistant_response.strip().lower()
 
+        if len(parsed_answer) != 1:
+            # Phi4mini adds a dot after the option letter, so we can try to parse that out if it's present
+            parsed_answer = parsed_answer[0]
+
         try:
             return parsed_answer, self.assistant_response(row) == parsed_answer
         except:
