@@ -2,7 +2,7 @@ import gc
 import json
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import torch
 from pydantic import BaseModel
@@ -116,7 +116,7 @@ class BaseTrainer[TConfig: BaseTrainerConfig[Any] = BaseTrainerConfig]:
             output_dir=self.config.out_path,
         )
 
-    def _prepare_data(self):
+    def _prepare_data(self) -> torch.utils.data.Dataset:
         train_ds = self.config.train_dataset.process_dataset()
         logger.info("Dataset samples")
         logger.info("Train")
@@ -124,7 +124,7 @@ class BaseTrainer[TConfig: BaseTrainerConfig[Any] = BaseTrainerConfig]:
         labels = [tok for tok in train_ds[0]["labels"] if tok != -100]
         logger.info(f"Labels: {self.tokenizer.decode(labels)}")
 
-        return train_ds
+        return cast(torch.utils.data.Dataset, train_ds.with_format("torch"))
 
     def _build_trainer(self, train_ds):
         trainer = Seq2SeqTrainer(
