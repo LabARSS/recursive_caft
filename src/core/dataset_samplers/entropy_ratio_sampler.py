@@ -1,13 +1,13 @@
 from typing import override
 
-from core.dataset_samplers.abstract_sampler import AbstractDatasetSampler, AbstractDatasetSamplerConfig
+from core.dataset_samplers.base_sampler import BaseDatasetSampler, BaseDatasetSamplerConfig
 
 
-class TeacherEntropySamplerConfig(AbstractDatasetSamplerConfig):
+class TeacherEntropySamplerConfig(BaseDatasetSamplerConfig):
     pass
 
 
-class EntropyGainSampler(AbstractDatasetSampler):
+class EntropyGainSampler(BaseDatasetSampler):
     _EPS = 1e-8
 
     @override

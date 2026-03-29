@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import override
 
+from torch.utils.data import IterableDataset
 from transformers import TrainerCallback, TrainerControl, TrainerState, TrainingArguments
 from transformers.modeling_utils import PreTrainedModel
 
@@ -11,8 +12,18 @@ from core.complexity_estimation.complexity_estimation_runner import (
     ModelGenerateConfig,
     QADatasetAdapter,
 )
+from core.datasets.abstract_dataset_adapter import AbstractDatasetAdapter
 from core.training.lora_trainer import LoRATrainer, LoRATrainerConfig
 from core.utils.logger import logger
+
+
+class ResamplingDatasetAdapter(IterableDataset):
+    def __init__(self, dataset: AbstractDatasetAdapter):
+        self.dataset = dataset
+
+    def __iter__(self):
+        dataset = self.dataset.process_dataset()
+        yield from dataset
 
 
 class EstimateComplexityCallback(TrainerCallback):

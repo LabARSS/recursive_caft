@@ -8,7 +8,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 
 from core.complexity_estimation.complexity_estimator import BaseComplexityEstimator
 from core.complexity_estimation.entropy.logit_entropy import compute_entropy_from_logits
-from core.datasets.abstract_dataset_adapter import TokenizedRow
+from core.datasets.base_dataset_adapter import TokenizedRow
 
 
 class MultiTokenEntropyEstimatorSchema(BaseModel):

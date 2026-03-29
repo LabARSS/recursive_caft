@@ -1,17 +1,15 @@
-from abc import ABC
+from abc import ABC, abstractmethod
 
 from datasets import Dataset
 from pydraconf import PydraConfig
 
-from core.datasets.abstract_dataset_adapter import abstractmethod
 
-
-class AbstractDatasetSamplerConfig(PydraConfig):
+class BaseDatasetSamplerConfig(PydraConfig):
     top_k: int
 
 
-class AbstractDatasetSampler(ABC):
-    def __init__(self, config: AbstractDatasetSamplerConfig):
+class BaseDatasetSampler(ABC):
+    def __init__(self, config: BaseDatasetSamplerConfig):
         self.config = config
 
     @abstractmethod

@@ -9,7 +9,7 @@ from transformers.generation.utils import GenerateDecoderOnlyOutput
 from transformers.modeling_utils import PreTrainedModel
 
 from core.complexity_estimation.complexity_estimator import BaseComplexityEstimator
-from core.datasets.abstract_dataset_adapter import TokenizedRow
+from core.datasets.base_dataset_adapter import TokenizedRow
 from core.datasets.qa_dataset_adapter import QADatasetAdapter
 
 
@@ -50,13 +50,13 @@ class ComplexityEstimationRunner:
 
         if os.path.exists(self.config.out_path) and os.path.exists(self.tmp_path()):
             print(f"Output path {self.config.out_path} already exists. Resuming from temporary file.")
-            ds = dataset_adapter.process_dataset(path_override=str(self.tmp_path()))
+            ds = dataset_adapter.process_dataset(path_override=str(self.tmp_path()), strict=False)
         else:
             print(f"No temporary file found. Starting from scratch. Writing to output file {self.config.out_path}.")
             if os.path.exists(self.config.out_path):
                 os.unlink(self.config.out_path)
 
-            ds = dataset_adapter.process_dataset()
+            ds = dataset_adapter.process_dataset(strict=False)
 
             ds = ds.add_column(self.config.answer_field_name, [None] * len(ds))
             ds = ds.add_column(self.config.answer_correctness_field_name, [None] * len(ds))
@@ -121,14 +121,13 @@ class ComplexityEstimationRunner:
                 invalid_answers += 1
 
             if processed_rows % self.config.save_every == 0:
-                df.to_parquet(path=self.tmp_path(), compression=None, index=False)
-
+                dataset_adapter.save_processed_dataset(df, path=self.tmp_path().as_posix(), tmp=True)
                 print(
                     f"Processing dataset {self.config.out_path}... Processed: {processed_rows}/{len(df)}. Invalid answers: {invalid_answers}"
                 )
 
         df = df.drop(columns=["input_ids", "attention_mask", "labels", "row_id"], errors="ignore")
-        df.to_parquet(path=self.config.out_path, index=False)
+        dataset_adapter.save_processed_dataset(df, path=self.config.out_path, tmp=False)
 
         if os.path.exists(self.tmp_path()):
             os.unlink(self.tmp_path())
