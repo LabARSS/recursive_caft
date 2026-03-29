@@ -39,7 +39,7 @@ class BaseDatasetAdapter[D: BaseDataset](AbstractDatasetAdapter):
         if path_override is not None:
             ds = self._load_ds(
                 self.dataset.__class__(
-                    config=self.dataset.config.model_copy(update={"path": path_override, "dataset_id": "tmp"}),
+                    config=self.dataset.config.model_copy(update={"path": path_override}),
                     tokenizer=self.dataset.tokenizer,
                 )
             )

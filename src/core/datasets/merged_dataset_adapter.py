@@ -16,7 +16,9 @@ class MergedDatasetAdapter(AbstractDatasetAdapter):
     def process_dataset(self, path_override: str | None = None) -> Dataset:
         datasets = [
             adapter.process_dataset(
-                path_override=Path(path_override) / adapter.dataset.id if path_override is not None else None,
+                path_override=(Path(path_override) / f"{adapter.dataset.id}.parquet").as_posix()
+                if path_override is not None
+                else None,
                 strict=True,
             )
             for adapter in self.dataset_adapters
