@@ -5,7 +5,7 @@ from pydantic.fields import FieldInfo
 from transformers.generation.utils import GenerateDecoderOnlyOutput
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from core.datasets.abstract_dataset_adapter import TokenizedRow
+from core.datasets.base_dataset_adapter import TokenizedRow
 
 
 class BaseComplexityEstimator[T: BaseModel](ABC):

@@ -1,8 +1,8 @@
-from core.datasets.abstract_dataset_adapter import AbstractDatasetAdapter, TokenizedRow
+from core.datasets.base_dataset_adapter import BaseDatasetAdapter, TokenizedRow
 from core.datasets.qa_dataset import QADataset
 
 
-class QADatasetAdapter(AbstractDatasetAdapter[QADataset]):
+class QADatasetAdapter(BaseDatasetAdapter[QADataset]):
     def process_row(self, row: dict) -> TokenizedRow:
         tokenized = self.dataset.tokenizer.apply_chat_template(
             [

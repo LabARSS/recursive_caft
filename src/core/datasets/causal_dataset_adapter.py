@@ -1,8 +1,8 @@
-from core.datasets.abstract_dataset_adapter import AbstractDatasetAdapter, TokenizedRow
+from core.datasets.base_dataset_adapter import BaseDatasetAdapter, TokenizedRow
 from core.datasets.causal_dataset import CausalDataset
 
 
-class CausalDatasetAdapter(AbstractDatasetAdapter[CausalDataset]):
+class CausalDatasetAdapter(BaseDatasetAdapter[CausalDataset]):
     def process_row(self, row: dict) -> TokenizedRow:
         input_messages = [
             {"role": "system", "content": self.dataset.system_prompt(row)},
