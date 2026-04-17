@@ -12,6 +12,7 @@ modules_to_save footgun (PEFT issues #1750, #2777 around tied weights).
 from pathlib import Path
 from typing import override
 
+import torch
 from transformers import AutoModelForCausalLM
 from transformers.modeling_utils import PreTrainedModel
 
@@ -35,12 +36,21 @@ class EmbeddingInitTrainerConfig(BaseTrainerConfig[EmbeddingInitTrainingArgs]):
 
 
 class EmbeddingInitTrainer(BaseTrainer[EmbeddingInitTrainerConfig]):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._num_new: int = 0
+        self._base_rows_snapshot: torch.Tensor | None = None
+
     @property
     @override
     def model(self) -> PreTrainedModel:
         if not self._model:
             model = AutoModelForCausalLM.from_pretrained(self.config.model_id)
             _, num_added = setup_thinking_tokens(self.tokenizer, model)
+            assert num_added > 0, (
+                f"Tokenizer for {self.config.model_id} already has <think>/</think>; "
+                "v0 training is only meaningful when new tokens are actually added."
+            )
             logger.info(
                 f"Added {num_added} special tokens; vocab={len(self.tokenizer)}; "
                 f"tie_word_embeddings={model.config.tie_word_embeddings}"
@@ -58,9 +68,25 @@ class EmbeddingInitTrainer(BaseTrainer[EmbeddingInitTrainerConfig]):
 
             for p in model.parameters():
                 p.requires_grad = False
-            model.get_input_embeddings().weight.requires_grad = True
+            in_w = model.get_input_embeddings().weight
+            in_w.requires_grad = True
             if out_layer is not None:
                 out_layer.weight.requires_grad = True
+
+            # Row-scoped backprop: zero grads for every pre-existing row so only
+            # the new-token rows are updated. Tied embeddings share the tensor,
+            # so a single hook on the input covers lm_head too.
+            def _mask_grad(grad: torch.Tensor) -> torch.Tensor:
+                masked = grad.clone()
+                masked[:-num_added] = 0
+                return masked
+
+            in_w.register_hook(_mask_grad)
+            if not model.config.tie_word_embeddings and out_layer is not None:
+                out_layer.weight.register_hook(_mask_grad)
+
+            self._base_rows_snapshot = in_w.detach()[:-num_added].cpu().clone()
+            self._num_new = num_added
 
             if self.config.training_args.gradient_checkpointing:
                 model.enable_input_require_grads()
@@ -73,6 +99,13 @@ class EmbeddingInitTrainer(BaseTrainer[EmbeddingInitTrainerConfig]):
     @override
     def _run_training(self, trainer):
         trainer.train()
+
+        assert self._base_rows_snapshot is not None and self._num_new > 0
+        after = trainer.model.get_input_embeddings().weight.detach()[: -self._num_new].cpu()
+        assert torch.equal(after, self._base_rows_snapshot), (
+            "Pre-existing embedding rows drifted during v0 training — gradient mask failed"
+        )
+
         save_dir = Path(self.config.final_save_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
         trainer.model.save_pretrained(save_dir)
