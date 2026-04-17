@@ -13,11 +13,15 @@ from core.datasets.qa_dataset import QADatasetConfig
 from core.datasets.qa_dataset_adapter import QADatasetAdapter
 from core.training.lora_trainer import LoRATrainingArgs
 from core.training.resampling_trainer import ResamplingTrainer, ResamplingTrainerConfig
+from core.training.thinking_tokens import setup_thinking_tokens
 
-MODEL_NAME = "meta-llama/Llama-3.2-3B-Instruct"
+MODEL_NAME = (
+    Path(__file__).resolve().parents[4].joinpath("artifacts/base_models_v0/qwen_3b").as_posix()
+)
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
 tokenizer.pad_token = tokenizer.eos_token
+setup_thinking_tokens(tokenizer)
 
 # TODO: Upd dataset paths
 trainer = ResamplingTrainer(
