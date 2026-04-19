@@ -7,6 +7,13 @@ dataset classes expect flat columns (question_id, question, options,
 answer, base_cluster, thinking). This rewrites the source parquet into
 a flat schema the existing dataset code can consume, caching the result
 on disk.
+
+Optional thinking-trace truncation: v0 training only needs the embedding
+rows for <think>/</think> to see the tokens in realistic context. Long
+reasoning chains dominate peak memory (cross-entropy over [tokens, vocab]
+fp32 logits) without adding signal proportional to their length. Truncate
+the thinking column at a char cap, trimmed back to the last whitespace so
+we don't cut mid-word just before </think>.
 """
 
 from pathlib import Path
@@ -16,13 +23,21 @@ import pandas as pd
 from core.utils.logger import logger
 
 
-def flatten_distillation_parquet(src: Path, dst: Path) -> Path:
+def flatten_distillation_parquet(
+    src: Path,
+    dst: Path,
+    max_thinking_chars: int | None = None,
+) -> Path:
     if dst.exists():
         logger.info(f"Flattened parquet already at {dst}, skipping.")
         return dst
 
     dst.parent.mkdir(parents=True, exist_ok=True)
     df = pd.read_parquet(src)
+
+    thinking = df["output"].apply(lambda r: r["thinking"])
+    if max_thinking_chars is not None:
+        thinking = thinking.apply(lambda t: _truncate_to_whitespace(t, max_thinking_chars))
 
     flat = pd.DataFrame(
         {
@@ -31,11 +46,24 @@ def flatten_distillation_parquet(src: Path, dst: Path) -> Path:
             "options": df["input"].apply(lambda r: str(list(r["options"].values()))),
             "answer": df["input"].apply(lambda r: str(r["gold"]).lower()),
             "base_cluster": df["input"].apply(lambda r: r["subject"]),
-            "thinking": df["output"].apply(lambda r: r["thinking"]),
+            "thinking": thinking,
         }
     )
 
     flat = flat[flat["thinking"].notna() & (flat["thinking"].str.len() > 0)]
     flat.to_parquet(dst, index=False)
-    logger.info(f"Wrote flattened parquet to {dst} ({len(flat)} rows)")
+    cap_note = f" (thinking capped at {max_thinking_chars} chars)" if max_thinking_chars else ""
+    logger.info(f"Wrote flattened parquet to {dst} ({len(flat)} rows){cap_note}")
     return dst
+
+
+def _truncate_to_whitespace(text: str | None, max_chars: int) -> str:
+    if text is None:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    cut = text[:max_chars]
+    last_ws = max(cut.rfind(" "), cut.rfind("\n"), cut.rfind("\t"))
+    if last_ws > 0:
+        cut = cut[:last_ws]
+    return cut.rstrip()

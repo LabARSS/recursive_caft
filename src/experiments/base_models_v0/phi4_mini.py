@@ -16,12 +16,22 @@ from experiments.base_models_v0._shared import flatten_distillation_parquet
 
 MODEL_NAME = "microsoft/Phi-4-mini-instruct"
 MODEL_NICK = "phi4_mini"
+# Cap the reasoning trace so cross-entropy logits ([tokens, 200064] fp32) fit
+# in memory. Full-length traces reach 18k+ tokens; the cap keeps the median
+# sample intact while dropping the long tail.
+MAX_THINKING_CHARS = 12000
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 FINAL_SAVE_DIR = REPO_ROOT / "artifacts" / "base_models_v0" / MODEL_NICK
 STAGING_DIR = FINAL_SAVE_DIR.with_name(MODEL_NICK + "_staging")
 SOURCE_PARQUET = REPO_ROOT / "data" / "out" / "distillation" / "mmlu_synth_qwen3_a_t0_8.parquet"
-FLAT_PARQUET = REPO_ROOT / "artifacts" / "base_models_v0" / "_flattened" / "mmlu_synth_qwen3_a_t0_8.parquet"
+FLAT_PARQUET = (
+    REPO_ROOT
+    / "artifacts"
+    / "base_models_v0"
+    / "_flattened"
+    / f"mmlu_synth_qwen3_a_t0_8_think_le{MAX_THINKING_CHARS}.parquet"
+)
 
 
 def main():
@@ -29,7 +39,9 @@ def main():
         logger.info(f"v0 base already at {FINAL_SAVE_DIR}, skipping. Delete the dir to force a rerun.")
         return
 
-    flat_path = flatten_distillation_parquet(SOURCE_PARQUET, FLAT_PARQUET)
+    flat_path = flatten_distillation_parquet(
+        SOURCE_PARQUET, FLAT_PARQUET, max_thinking_chars=MAX_THINKING_CHARS
+    )
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
     if tokenizer.pad_token is None:
