@@ -57,8 +57,8 @@ def flatten_distillation_parquet(
     return dst
 
 
-def _truncate_to_whitespace(text: str | None, max_chars: int) -> str:
-    if text is None:
+def _truncate_to_whitespace(text: object, max_chars: int) -> str:
+    if not isinstance(text, str):
         return ""
     if len(text) <= max_chars:
         return text
