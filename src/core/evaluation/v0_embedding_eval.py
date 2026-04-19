@@ -26,7 +26,7 @@ from core.datasets.mmlu.mmlu_single_token_response_dataset import MMLUSingleToke
 from core.datasets.qa_dataset import QADatasetConfig
 from core.datasets.qa_dataset_adapter import QADatasetAdapter
 from core.evaluation.evaluator import Evaluator, EvaluatorConfig, GenerationConfig
-from core.training.thinking_tokens import setup_thinking_tokens
+from core.training.thinking_tokens import new_token_ids, setup_thinking_tokens
 from core.utils.logger import logger
 
 
@@ -70,18 +70,38 @@ def run_v0_embedding_eval(config: V0EmbeddingEvalConfig) -> dict:
 
 def _check_pre_existing_rows_match(v0_dir: Path, base_model_id: str) -> dict:
     v0_tok = AutoTokenizer.from_pretrained(v0_dir.as_posix(), trust_remote_code=True)
-    base_tok = AutoTokenizer.from_pretrained(base_model_id, trust_remote_code=True)
-    num_new = len(v0_tok) - len(base_tok)
-    assert num_new > 0, f"v0 vocab ({len(v0_tok)}) is not larger than base ({len(base_tok)})"
+    setup_thinking_tokens(v0_tok)
+    new_ids = new_token_ids(v0_tok)
 
     v0_model = AutoModelForCausalLM.from_pretrained(v0_dir.as_posix(), torch_dtype=torch.bfloat16)
     base_model = AutoModelForCausalLM.from_pretrained(base_model_id, torch_dtype=torch.bfloat16)
 
-    v0_rows = v0_model.get_input_embeddings().weight.detach().cpu()[:-num_new]
-    base_rows = base_model.get_input_embeddings().weight.detach().cpu()
+    v0_weight = v0_model.get_input_embeddings().weight.detach().cpu()
+    base_weight = base_model.get_input_embeddings().weight.detach().cpu()
 
-    identical = torch.equal(v0_rows, base_rows)
-    max_abs_delta = (v0_rows - base_rows).abs().max().item() if not identical else 0.0
+    # For tight-vocab models v0 has +num_added rows vs base; for padded-vocab
+    # models (Phi-4-mini) the row count matches. Mask out the new-token ids and
+    # compare the remainder — valid in both cases.
+    v0_rows, base_rows = v0_weight.shape[0], base_weight.shape[0]
+    num_new = v0_rows - base_rows
+    assert num_new in (0, len(new_ids)), (
+        f"Unexpected v0 vs base embedding row delta: v0={v0_rows}, base={base_rows}, "
+        f"expected delta 0 or {len(new_ids)}"
+    )
+
+    v0_keep = torch.ones(v0_rows, dtype=torch.bool)
+    v0_keep[torch.tensor(new_ids)] = False
+    v0_existing = v0_weight[v0_keep]
+
+    if num_new == 0:
+        base_keep = torch.ones(base_rows, dtype=torch.bool)
+        base_keep[torch.tensor(new_ids)] = False
+        base_existing = base_weight[base_keep]
+    else:
+        base_existing = base_weight
+
+    identical = torch.equal(v0_existing, base_existing)
+    max_abs_delta = (v0_existing - base_existing).abs().max().item() if not identical else 0.0
 
     del v0_model, base_model
 
@@ -89,7 +109,7 @@ def _check_pre_existing_rows_match(v0_dir: Path, base_model_id: str) -> dict:
         f"Pre-existing embedding rows differ between v0 and base (max abs delta {max_abs_delta}). "
         "Row-scoped backprop or save/load round-trip corrupted the embedding table."
     )
-    return {"identical": True, "num_new_rows": num_new, "max_abs_delta": max_abs_delta}
+    return {"identical": True, "new_ids": new_ids, "row_delta": num_new, "max_abs_delta": max_abs_delta}
 
 
 def _run_mmlu_eval(

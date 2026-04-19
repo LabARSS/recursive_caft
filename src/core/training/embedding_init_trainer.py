@@ -17,7 +17,7 @@ from transformers import AutoModelForCausalLM
 from transformers.modeling_utils import PreTrainedModel
 
 from core.training.base_trainer import BaseTrainer, BaseTrainerConfig, BaseTrainingArgs
-from core.training.thinking_tokens import mean_init_new_rows, setup_thinking_tokens
+from core.training.thinking_tokens import new_token_ids, setup_thinking_tokens
 from core.utils.logger import logger
 
 
@@ -38,7 +38,7 @@ class EmbeddingInitTrainerConfig(BaseTrainerConfig[EmbeddingInitTrainingArgs]):
 class EmbeddingInitTrainer(BaseTrainer[EmbeddingInitTrainerConfig]):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._num_new: int = 0
+        self._new_ids: list[int] = []
         self._base_rows_snapshot: torch.Tensor | None = None
 
     @property
@@ -46,21 +46,18 @@ class EmbeddingInitTrainer(BaseTrainer[EmbeddingInitTrainerConfig]):
     def model(self) -> PreTrainedModel:
         if not self._model:
             model = AutoModelForCausalLM.from_pretrained(self.config.model_id)
-            # Number of new rows that must be appended = how much the tokenizer
-            # already overshoots the model's embedding table. This is the true
-            # quantity we need regardless of whether the caller already invoked
-            # setup_thinking_tokens(tokenizer) upstream.
-            num_added = len(self.tokenizer) - model.get_input_embeddings().weight.shape[0]
-            assert num_added > 0, (
-                f"Tokenizer len ({len(self.tokenizer)}) is not larger than model vocab "
-                f"({model.get_input_embeddings().weight.shape[0]}). Caller must register "
-                "<think>/</think> on the tokenizer before building the trainer."
-            )
-            model.resize_token_embeddings(len(self.tokenizer))
-            _, _ = setup_thinking_tokens(self.tokenizer)  # idempotent; re-attaches python attrs
-            mean_init_new_rows(model, num_added)
+
+            # Idempotent: registers tokens if the upstream script didn't already,
+            # resizes the model only if the tokenizer has outgrown the embedding
+            # table (skipped for padded-vocab models like Phi-4-mini), and
+            # mean-inits the rows at the new-token ids (not necessarily the tail).
+            setup_thinking_tokens(self.tokenizer, model)
+            new_ids = new_token_ids(self.tokenizer)
+            think_id, close_id = new_ids
+
             logger.info(
-                f"Extended vocab by {num_added} rows; vocab={len(self.tokenizer)}; "
+                f"new_ids={new_ids}; tokenizer_len={len(self.tokenizer)}; "
+                f"embedding_rows={model.get_input_embeddings().weight.shape[0]}; "
                 f"tie_word_embeddings={model.config.tie_word_embeddings}"
             )
 
@@ -69,10 +66,10 @@ class EmbeddingInitTrainer(BaseTrainer[EmbeddingInitTrainerConfig]):
             out_ptr = out_layer.weight.data_ptr() if out_layer is not None else None
             logger.info(f"input_emb ptr == output_emb ptr: {in_ptr == out_ptr}")
 
-            think_ids = self.tokenizer.encode("<think>", add_special_tokens=False)
-            close_ids = self.tokenizer.encode("</think>", add_special_tokens=False)
-            assert len(think_ids) == 1, f"<think> tokenizes to {think_ids}, expected single id"
-            assert len(close_ids) == 1, f"</think> tokenizes to {close_ids}, expected single id"
+            think_tok = self.tokenizer.encode("<think>", add_special_tokens=False)
+            close_tok = self.tokenizer.encode("</think>", add_special_tokens=False)
+            assert think_tok == [think_id], f"<think> tokenizes to {think_tok}, expected [{think_id}]"
+            assert close_tok == [close_id], f"</think> tokenizes to {close_tok}, expected [{close_id}]"
 
             for p in model.parameters():
                 p.requires_grad = False
@@ -81,20 +78,28 @@ class EmbeddingInitTrainer(BaseTrainer[EmbeddingInitTrainerConfig]):
             if out_layer is not None:
                 out_layer.weight.requires_grad = True
 
-            # Row-scoped backprop: zero grads for every pre-existing row so only
-            # the new-token rows are updated. Tied embeddings share the tensor,
-            # so a single hook on the input covers lm_head too.
+            # Row-scoped backprop: zero grads for every row NOT in new_ids so only
+            # the new-token rows are updated. Tied embeddings share the tensor, so
+            # a single hook on the input covers lm_head too.
+            vocab = in_w.shape[0]
+            keep_mask = torch.zeros(vocab, dtype=torch.bool)
+            keep_mask[torch.tensor(new_ids)] = True
+
             def _mask_grad(grad: torch.Tensor) -> torch.Tensor:
-                masked = grad.clone()
-                masked[:-num_added] = 0
+                masked = torch.zeros_like(grad)
+                idx = keep_mask.to(grad.device)
+                masked[idx] = grad[idx]
                 return masked
 
             in_w.register_hook(_mask_grad)
             if not model.config.tie_word_embeddings and out_layer is not None:
                 out_layer.weight.register_hook(_mask_grad)
 
-            self._base_rows_snapshot = in_w.detach()[:-num_added].cpu().clone()
-            self._num_new = num_added
+            # Snapshot everything EXCEPT the new rows, so the post-train assert
+            # can verify row-scoped backprop held regardless of vocab layout.
+            existing_mask = ~keep_mask
+            self._base_rows_snapshot = in_w.detach()[existing_mask].cpu().clone()
+            self._new_ids = new_ids
 
             if self.config.training_args.gradient_checkpointing:
                 model.enable_input_require_grads()
@@ -108,9 +113,13 @@ class EmbeddingInitTrainer(BaseTrainer[EmbeddingInitTrainerConfig]):
     def _run_training(self, trainer):
         trainer.train()
 
-        assert self._base_rows_snapshot is not None and self._num_new > 0
-        after = trainer.model.get_input_embeddings().weight.detach()[: -self._num_new].cpu()
-        assert torch.equal(after, self._base_rows_snapshot), (
+        assert self._base_rows_snapshot is not None and self._new_ids
+        weight = trainer.model.get_input_embeddings().weight.detach()
+        vocab = weight.shape[0]
+        keep_mask = torch.zeros(vocab, dtype=torch.bool)
+        keep_mask[torch.tensor(self._new_ids)] = True
+        existing = weight[~keep_mask].cpu()
+        assert torch.equal(existing, self._base_rows_snapshot), (
             "Pre-existing embedding rows drifted during v0 training — gradient mask failed"
         )
 
