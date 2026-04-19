@@ -21,20 +21,24 @@ def setup_thinking_tokens(
     tokenizer: PreTrainedTokenizer,
     model: PreTrainedModel | None = None,
 ) -> tuple[PreTrainedTokenizer, int]:
-    num_added = tokenizer.add_special_tokens(
-        {"additional_special_tokens": [THINKING_START, THINKING_END]}
-    )
+    # Important: passing additional_special_tokens to add_special_tokens REPLACES
+    # the list on HF tokenizers rather than extending it, which would wipe
+    # model-specific specials like <|im_start|>. Extend the current list instead.
+    existing = list(tokenizer.additional_special_tokens or [])
+    merged = existing + [t for t in (THINKING_START, THINKING_END) if t not in existing]
+    num_added = tokenizer.add_special_tokens({"additional_special_tokens": merged})
+
     tokenizer.thinking_start_token = THINKING_START
     tokenizer.thinking_end_token = THINKING_END
 
     if model is not None and num_added > 0:
         model.resize_token_embeddings(len(tokenizer))
-        _mean_init_new_rows(model, num_added)
+        mean_init_new_rows(model, num_added)
 
     return tokenizer, num_added
 
 
-def _mean_init_new_rows(model: PreTrainedModel, num_added: int) -> None:
+def mean_init_new_rows(model: PreTrainedModel, num_added: int) -> None:
     with torch.no_grad():
         in_emb = model.get_input_embeddings().weight.data
         in_emb[-num_added:] = in_emb[:-num_added].mean(dim=0, keepdim=True)

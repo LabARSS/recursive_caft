@@ -17,7 +17,7 @@ from transformers import AutoModelForCausalLM
 from transformers.modeling_utils import PreTrainedModel
 
 from core.training.base_trainer import BaseTrainer, BaseTrainerConfig, BaseTrainingArgs
-from core.training.thinking_tokens import setup_thinking_tokens
+from core.training.thinking_tokens import mean_init_new_rows, setup_thinking_tokens
 from core.utils.logger import logger
 
 
@@ -46,13 +46,21 @@ class EmbeddingInitTrainer(BaseTrainer[EmbeddingInitTrainerConfig]):
     def model(self) -> PreTrainedModel:
         if not self._model:
             model = AutoModelForCausalLM.from_pretrained(self.config.model_id)
-            _, num_added = setup_thinking_tokens(self.tokenizer, model)
+            # Number of new rows that must be appended = how much the tokenizer
+            # already overshoots the model's embedding table. This is the true
+            # quantity we need regardless of whether the caller already invoked
+            # setup_thinking_tokens(tokenizer) upstream.
+            num_added = len(self.tokenizer) - model.get_input_embeddings().weight.shape[0]
             assert num_added > 0, (
-                f"Tokenizer for {self.config.model_id} already has <think>/</think>; "
-                "v0 training is only meaningful when new tokens are actually added."
+                f"Tokenizer len ({len(self.tokenizer)}) is not larger than model vocab "
+                f"({model.get_input_embeddings().weight.shape[0]}). Caller must register "
+                "<think>/</think> on the tokenizer before building the trainer."
             )
+            model.resize_token_embeddings(len(self.tokenizer))
+            _, _ = setup_thinking_tokens(self.tokenizer)  # idempotent; re-attaches python attrs
+            mean_init_new_rows(model, num_added)
             logger.info(
-                f"Added {num_added} special tokens; vocab={len(self.tokenizer)}; "
+                f"Extended vocab by {num_added} rows; vocab={len(self.tokenizer)}; "
                 f"tie_word_embeddings={model.config.tie_word_embeddings}"
             )
 
