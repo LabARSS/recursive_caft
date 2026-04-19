@@ -81,15 +81,15 @@ class EmbeddingInitTrainer(BaseTrainer[EmbeddingInitTrainerConfig]):
             # Row-scoped backprop: zero grads for every row NOT in new_ids so only
             # the new-token rows are updated. Tied embeddings share the tensor, so
             # a single hook on the input covers lm_head too.
+            # Done in-place to avoid allocating a second [vocab, hidden] tensor
+            # per backward (meaningful on padded-vocab models like Phi-4-mini).
             vocab = in_w.shape[0]
-            keep_mask = torch.zeros(vocab, dtype=torch.bool)
-            keep_mask[torch.tensor(new_ids)] = True
+            keep_col = torch.zeros(vocab, 1, dtype=torch.bool)
+            keep_col[torch.tensor(new_ids)] = True
 
             def _mask_grad(grad: torch.Tensor) -> torch.Tensor:
-                masked = torch.zeros_like(grad)
-                idx = keep_mask.to(grad.device)
-                masked[idx] = grad[idx]
-                return masked
+                grad.mul_(keep_col.to(dtype=grad.dtype, device=grad.device))
+                return grad
 
             in_w.register_hook(_mask_grad)
             if not model.config.tie_word_embeddings and out_layer is not None:
@@ -97,7 +97,8 @@ class EmbeddingInitTrainer(BaseTrainer[EmbeddingInitTrainerConfig]):
 
             # Snapshot everything EXCEPT the new rows, so the post-train assert
             # can verify row-scoped backprop held regardless of vocab layout.
-            existing_mask = ~keep_mask
+            existing_mask = torch.ones(vocab, dtype=torch.bool)
+            existing_mask[torch.tensor(new_ids)] = False
             self._base_rows_snapshot = in_w.detach()[existing_mask].cpu().clone()
             self._new_ids = new_ids
 

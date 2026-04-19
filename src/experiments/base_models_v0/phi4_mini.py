@@ -52,7 +52,7 @@ def main():
             ),
             training_args=EmbeddingInitTrainingArgs(
                 num_train_epochs=1,
-                per_device_train_batch_size=8,
+                per_device_train_batch_size=2,
             ),
         ),
         tokenizer=tokenizer,
