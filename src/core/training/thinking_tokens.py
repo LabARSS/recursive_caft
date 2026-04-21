@@ -31,15 +31,20 @@ def setup_thinking_tokens(
     tokenizer.thinking_start_token = THINKING_START
     tokenizer.thinking_end_token = THINKING_END
 
-    if model is not None and num_added > 0:
-        # Some models (e.g. Phi-4-mini) ship with a padded embedding table where
-        # model.vocab_size > tokenizer_vocab_size, so the new token ids may fit
-        # WITHOUT a resize. Only resize when the tokenizer has grown past the
-        # model's embedding table.
-        if len(tokenizer) > model.get_input_embeddings().weight.shape[0]:
+    if model is not None:
+        # Keep the resize decision independent of num_added on THIS call: an
+        # upstream script may have already registered the tokens on the
+        # tokenizer (num_added==0 here) while the freshly loaded model still
+        # has the original vocab size, so we must resize based on the current
+        # tokenizer-vs-model delta. Padded-vocab models like Phi-4-mini fit
+        # the new ids without a resize — but their padded rows still contain
+        # near-zero garbage, so we always mean-init the new-id rows.
+        in_weight: torch.Tensor = model.get_input_embeddings().weight.data  # type: ignore[assignment]
+        emb_rows = in_weight.shape[0]
+        max_new_id = max(new_token_ids(tokenizer))
+        if max_new_id >= emb_rows:
             model.resize_token_embeddings(len(tokenizer))
-        new_ids = new_token_ids(tokenizer)
-        mean_init_new_rows(model, new_ids)
+        mean_init_new_rows(model, new_token_ids(tokenizer))
 
     return tokenizer, num_added
 
