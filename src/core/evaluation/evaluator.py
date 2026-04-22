@@ -1,3 +1,4 @@
+import gc
 import json
 from pathlib import Path
 
@@ -13,6 +14,12 @@ from core.datasets.qa_dataset_adapter import QADatasetAdapter
 from core.evaluation.phased_batch_generator import BatchGenerator
 from core.utils.device import DEVICE_MAP
 from core.utils.logger import logger
+
+# BatchGenerator.generate() prefills every prompt upfront and stages each KV
+# cache on CPU RAM. For 12k+ MMLU-Pro prompts on a 200k-vocab model like
+# Phi-4-mini that's ~200GB of staged KV and the container gets OOM-killed.
+# Chunking the prompt list bounds peak CPU RAM to one chunk's staging queue.
+CHUNK_SIZE = 1024
 
 
 class GenerationConfig(BaseModel):
@@ -81,62 +88,81 @@ class Evaluator:
         ds = eval_dataset.process_dataset()
 
         prompts = [row["input_ids"] for row in ds]
-        logger.info(
-            f"Evaluating {len(prompts)} samples with model from {self.config.model_path} for dataset {eval_dataset.dataset.dataset_id}..."
-        )
-
-        generator = BatchGenerator(
-            model=model,
-            tokenizer=tokenizer,
-            max_new_tokens=self.config.generation.max_new_tokens,
-            max_batch_size=self.config.generation.max_batch_size,
-            temperature=self.config.generation.temperature,
-            top_p=self.config.generation.top_p,
-            top_k=self.config.generation.top_k,
-        )
-
-        gen_result = generator.generate(prompts)
-        generated = gen_result.sequences
-
-        if gen_result.num_truncated > 0:
-            pct = gen_result.num_truncated / gen_result.total * 100
-            logger.warning(
-                f"Generation reached max_new_tokens ({self.config.generation.max_new_tokens}) "
-                f"for {gen_result.num_truncated}/{gen_result.total} sequences ({pct:.1f}%)"
-            )
-
-        correct = 0
         total = len(prompts)
-        all_results: list[dict] = []
+        logger.info(
+            f"Evaluating {total} samples with model from {self.config.model_path} for dataset {eval_dataset.dataset.dataset_id}..."
+        )
 
         qa_dataset: QADataset = eval_dataset.dataset
 
-        for i, gen_ids in enumerate(generated):
-            row = ds[i]
-            response = tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
+        correct = 0
+        num_truncated = 0
+        all_results: list[dict] = []
 
-            try:
-                parsed_answer, is_correct = qa_dataset.verify_assistant_response(row, response)
-            except Exception as ex:
-                logger.warning(f"Error verifying row {row['row_id']}: {ex}")
-                parsed_answer = response
-                is_correct = False
+        num_chunks = (total + CHUNK_SIZE - 1) // CHUNK_SIZE
+        for chunk_idx in range(num_chunks):
+            start = chunk_idx * CHUNK_SIZE
+            end = min(start + CHUNK_SIZE, total)
+            chunk_prompts = prompts[start:end]
 
-            if is_correct:
-                correct += 1
+            logger.info(
+                f"Chunk {chunk_idx + 1}/{num_chunks}: prompts [{start}:{end}] "
+                f"({len(chunk_prompts)} samples)"
+            )
 
-            all_results.append(
-                {
-                    "row_id": row["row_id"],
-                    "response": response,
-                    "parsed_answer": parsed_answer,
-                    "is_correct": is_correct,
-                }
+            generator = BatchGenerator(
+                model=model,
+                tokenizer=tokenizer,
+                max_new_tokens=self.config.generation.max_new_tokens,
+                max_batch_size=self.config.generation.max_batch_size,
+                temperature=self.config.generation.temperature,
+                top_p=self.config.generation.top_p,
+                top_k=self.config.generation.top_k,
+            )
+
+            gen_result = generator.generate(chunk_prompts)
+            num_truncated += gen_result.num_truncated
+
+            for offset, gen_ids in enumerate(gen_result.sequences):
+                row = ds[start + offset]
+                response = tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
+
+                try:
+                    parsed_answer, is_correct = qa_dataset.verify_assistant_response(row, response)
+                except Exception as ex:
+                    logger.warning(f"Error verifying row {row['row_id']}: {ex}")
+                    parsed_answer = response
+                    is_correct = False
+
+                if is_correct:
+                    correct += 1
+
+                all_results.append(
+                    {
+                        "row_id": row["row_id"],
+                        "response": response,
+                        "parsed_answer": parsed_answer,
+                        "is_correct": is_correct,
+                    }
+                )
+
+            # Release the chunk's CPU-staged KV caches before the next chunk
+            # prefills its own. Without this, peak CPU RAM keeps climbing.
+            del generator, gen_result
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        if num_truncated > 0:
+            pct = num_truncated / total * 100
+            logger.warning(
+                f"Generation reached max_new_tokens ({self.config.generation.max_new_tokens}) "
+                f"for {num_truncated}/{total} sequences ({pct:.1f}%)"
             )
 
         accuracy = correct / total if total > 0 else 0.0
         result = EvaluationResult(
-            accuracy=accuracy, total=total, correct=correct, num_truncated=gen_result.num_truncated
+            accuracy=accuracy, total=total, correct=correct, num_truncated=num_truncated
         )
 
         logger.info(f"Evaluation complete: accuracy={accuracy:.4f} ({correct}/{total})")
