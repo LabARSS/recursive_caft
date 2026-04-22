@@ -17,6 +17,7 @@ Writes `eval_summary.json` into the v0 dir and returns the summary dict.
 import json
 from pathlib import Path
 
+import pandas as pd
 import torch
 from pydantic import BaseModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -35,6 +36,10 @@ class V0EmbeddingEvalConfig(BaseModel):
     base_model_id: str
     mmlu_test_parquet: str
     eval_out_path: str
+    # Subsample size for the MMLU evals. None means use the full parquet.
+    # Evals on 12k+ rows take too long in practice; 1000 gives ±1.5% 95% CI.
+    mmlu_sample_size: int | None = 1000
+    mmlu_sample_seed: int = 42
 
 
 def run_v0_embedding_eval(config: V0EmbeddingEvalConfig) -> dict:
@@ -45,17 +50,29 @@ def run_v0_embedding_eval(config: V0EmbeddingEvalConfig) -> dict:
         v0_dir=v0_dir, base_model_id=config.base_model_id
     )
 
+    mmlu_parquet = _prepare_mmlu_sample(
+        src=Path(config.mmlu_test_parquet),
+        eval_out_path=Path(config.eval_out_path),
+        sample_size=config.mmlu_sample_size,
+        seed=config.mmlu_sample_seed,
+    )
+    summary["mmlu_sample"] = {
+        "path": str(mmlu_parquet),
+        "size": config.mmlu_sample_size,
+        "seed": config.mmlu_sample_seed,
+    }
+
     summary["mmlu_single_token"] = _run_mmlu_eval(
         v0_dir=v0_dir,
         base_model_id=config.base_model_id,
-        mmlu_test_parquet=config.mmlu_test_parquet,
+        mmlu_test_parquet=mmlu_parquet.as_posix(),
         eval_out_path=config.eval_out_path,
         mode="single_token",
     )
     summary["mmlu_cot"] = _run_mmlu_eval(
         v0_dir=v0_dir,
         base_model_id=config.base_model_id,
-        mmlu_test_parquet=config.mmlu_test_parquet,
+        mmlu_test_parquet=mmlu_parquet.as_posix(),
         eval_out_path=config.eval_out_path,
         mode="cot",
     )
@@ -66,6 +83,32 @@ def run_v0_embedding_eval(config: V0EmbeddingEvalConfig) -> dict:
     logger.info(f"Wrote eval summary to {summary_path}")
 
     return summary
+
+
+def _prepare_mmlu_sample(
+    src: Path,
+    eval_out_path: Path,
+    sample_size: int | None,
+    seed: int,
+) -> Path:
+    if sample_size is None:
+        return src
+
+    eval_out_path.mkdir(parents=True, exist_ok=True)
+    dst = eval_out_path / f"mmlu_sample_n{sample_size}_s{seed}.parquet"
+    if dst.exists():
+        logger.info(f"Using cached MMLU sample at {dst}")
+        return dst
+
+    df = pd.read_parquet(src)
+    if sample_size >= len(df):
+        logger.info(f"Sample size {sample_size} >= full parquet ({len(df)}); using full file")
+        return src
+
+    sampled = df.sample(n=sample_size, random_state=seed).reset_index(drop=True)
+    sampled.to_parquet(dst, index=False)
+    logger.info(f"Wrote MMLU sample ({sample_size} rows, seed={seed}) to {dst}")
+    return dst
 
 
 def _check_pre_existing_rows_match(v0_dir: Path, base_model_id: str) -> dict:
