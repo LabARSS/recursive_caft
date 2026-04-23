@@ -163,7 +163,9 @@ def _run_mmlu_eval(
     mode: str,
 ) -> dict:
     dataset_cls = MMLUSingleTokenResponseDataset if mode == "single_token" else MMLUCoTResponseDataset
-    max_new_tokens = 1 if mode == "single_token" else 8192
+    # CoT reasoning traces rarely exceed 1-2k tokens; 8192 just slows the eval
+    # to a crawl without improving accuracy signal.
+    max_new_tokens = 1 if mode == "single_token" else 2048
 
     return {
         "v0": _eval_one(
