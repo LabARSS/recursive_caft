@@ -4,10 +4,9 @@ from concurrent import futures
 import pandas as pd
 from tqdm import tqdm
 
-from core.prompts.mmlu_cot_answer import answer_marker, cot_answer_prompt, cot_sys_prompt
+from core.prompts.mmlu_single_token_answer import single_token_answer_prompt, single_token_sys_prompt
 from core.utils.chunker import chunker
 from core.utils.openrouter import openrouter
-from core.utils.validation import validate_mmlu_answer
 
 chunk_size = 30
 
@@ -22,9 +21,28 @@ def call_remote_llm(args):
         ]
 
         completion = openrouter.chat.completions.create(
-            model=model, messages=messages, max_tokens=max_tokens, logprobs=True
+            model="deepseek/deepseek-v4-flash",
+            messages=messages,
+            extra_body={
+                "reasoning": {"enabled": True, "max_tokens": 8192},
+                "provider": {"order": ["novita"], "allow_fallbacks": False},
+            },
         )
-        return index, completion.choices[0].message.content
+
+        msg = completion.choices[0].message
+
+        # `reasoning` and `reasoning_details` are NOT in the OpenAI pydantic schema.
+        # The SDK keeps unknown fields accessible via attribute access OR model_extra.
+        # getattr is the safe path:
+        content = msg.content
+        reasoning_details = getattr(msg, "reasoning_details", None)  # list[dict] or None
+
+        # If your openai-python is old enough to strip extras, fall back:
+        if reasoning_details is None:
+            extra = getattr(msg, "model_extra", {}) or {}
+            reasoning_details = extra.get("reasoning_details")
+
+        return index, content, reasoning_details["text"]
     except:
         return None
 
@@ -36,32 +54,29 @@ def distill_on_dataset(
     get_question_from_row,
     get_options_from_row,
     check_answer_correct,
-    dump_every=10,
-    max_tokens=2048,
-    model="deepseek/deepseek-chat-v3-0324",
-    get_sys_prompt=cot_sys_prompt,
-    get_user_prompt=cot_answer_prompt,
+    dump_every=100,
+    max_tokens=8192,
+    model="deepseek/deepseek-v4-flash",
+    get_sys_prompt=single_token_sys_prompt,
+    get_user_prompt=single_token_answer_prompt,
 ):
     invalid_answers = 0
 
-    field_response = "distill_response"
+    field_reasoning = "distill_reasoning"
     field_ans = "distill_answer"
     field_ans_correct = "distill_ans_correct"
 
     if os.path.exists(out_filename):
-        df = pd.read_csv(out_filename, sep="\t", dtype={field_response: "str", field_ans: "str"}, keep_default_na=False)
+        df = pd.read_parquet(out_filename)
     else:
-        df = pd.read_csv(
-            in_filename,
-            sep="\t",
-        )
+        df = pd.read_parquet(in_filename)
 
     # print(df.dtypes)
 
     if field_ans_correct not in df.columns:
         df[field_ans_correct] = False
-    if field_response not in df.columns:
-        df[field_response] = ""
+    if field_reasoning not in df.columns:
+        df[field_reasoning] = ""
     if field_ans not in df.columns:
         df[field_ans] = ""
 
@@ -70,7 +85,7 @@ def distill_on_dataset(
             args_list = []
 
             for index, row in chunk.iterrows():
-                if df.at[index, field_response] != "":
+                if df.at[index, field_reasoning] != "":
                     continue
 
                 sys_prompt = get_sys_prompt(get_subject_from_row(row))
@@ -84,30 +99,19 @@ def distill_on_dataset(
                     invalid_answers += 1
                     continue
 
-                index, response = result
+                index, model_answer, model_reasoning = result
 
-                df.at[index, field_response] = response
+                df.at[index, field_ans] = model_answer
+                df.at[index, field_reasoning] = model_reasoning
+                df.at[index, field_ans_correct] = check_answer_correct(df.iloc[index], model_answer)
 
-                answer_marker_start = response.find(answer_marker[0])
-                answer_marker_end = response.find(answer_marker[1])
-
-                extracted_answer = ""
-                if answer_marker_end != -1 and answer_marker_start != -1:
-                    extracted_answer = response[answer_marker_start + len(answer_marker[0]) : answer_marker_end]
-
-                if validate_mmlu_answer(extracted_answer):
-                    df.at[index, field_ans] = extracted_answer
-                    df.at[index, field_ans_correct] = check_answer_correct(df.iloc[index], extracted_answer)
-                else:
-                    invalid_answers += 1
-
-                # print(
-                #     f"response: {response}\nextracted_answer: {extracted_answer}\ncorrect:{df.at[index, field_ans_correct]}\n\n"
-                # )
+                print(
+                    f"response: {model_reasoning}\nextracted_answer: {model_answer}\ncorrect:{df.at[index, field_ans_correct]}\n\n"
+                )
 
             if chunk_idx % dump_every == 0:
-                df.to_csv(out_filename, sep="\t", index=False)
+                df.to_parquet(out_filename, index=False)
 
-    df.to_csv(out_filename, sep="\t", index=False)
+    df.to_parquet(out_filename, index=False)
     print(f"Processed dataset {out_filename}. Total entries: {df.shape[0]}. Invalid answers: {invalid_answers}")
     return df
