@@ -28,7 +28,6 @@ def call_remote_llm(args):
                 "reasoning": {"enabled": True, "max_tokens": 8192},
                 "provider": {"order": ["deepseek"], "allow_fallbacks": False},
             },
-            timeout=120,
         )
 
         msg = completion.choices[0].message
