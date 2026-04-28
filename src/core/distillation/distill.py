@@ -8,7 +8,7 @@ from core.prompts.mmlu_single_token_answer import single_token_answer_prompt, si
 from core.utils.chunker import chunker
 from core.utils.openrouter import openrouter
 
-chunk_size = 30
+chunk_size = 16
 
 
 def call_remote_llm(args):
@@ -20,30 +20,26 @@ def call_remote_llm(args):
             {"role": "user", "content": user_prompt},
         ]
 
+        # print(f"Calling LLM for index {index} with model {model}...")
         completion = openrouter.chat.completions.create(
             model="deepseek/deepseek-v4-flash",
             messages=messages,
             extra_body={
                 "reasoning": {"enabled": True, "max_tokens": 8192},
-                "provider": {"order": ["novita"], "allow_fallbacks": False},
+                "provider": {"order": ["deepseek"], "allow_fallbacks": False},
             },
+            timeout=120,
         )
 
         msg = completion.choices[0].message
+        # print(f"Received response for index {index}: {msg}")
 
-        # `reasoning` and `reasoning_details` are NOT in the OpenAI pydantic schema.
-        # The SDK keeps unknown fields accessible via attribute access OR model_extra.
-        # getattr is the safe path:
         content = msg.content
-        reasoning_details = getattr(msg, "reasoning_details", None)  # list[dict] or None
+        reasoning = getattr(msg, "reasoning")
 
-        # If your openai-python is old enough to strip extras, fall back:
-        if reasoning_details is None:
-            extra = getattr(msg, "model_extra", {}) or {}
-            reasoning_details = extra.get("reasoning_details")
-
-        return index, content, reasoning_details["text"]
-    except:
+        return index, content, reasoning
+    except Exception as e:
+        print(f"Error occurred: {e}")
         return None
 
 
@@ -54,13 +50,14 @@ def distill_on_dataset(
     get_question_from_row,
     get_options_from_row,
     check_answer_correct,
-    dump_every=100,
+    dump_every=50,
     max_tokens=8192,
     model="deepseek/deepseek-v4-flash",
     get_sys_prompt=single_token_sys_prompt,
     get_user_prompt=single_token_answer_prompt,
 ):
     invalid_answers = 0
+    cnt = 0
 
     field_reasoning = "distill_reasoning"
     field_ans = "distill_answer"
@@ -92,6 +89,12 @@ def distill_on_dataset(
                 user_prompt = get_user_prompt(get_question_from_row(row), get_options_from_row(row))
                 args_list.append((sys_prompt, user_prompt, index, model, max_tokens))
 
+            if len(args_list) == 0:
+                continue
+
+            # print(
+            #     f"Processing chunk {chunk_idx}. Total entries in chunk: {len(chunk)}. Entries to process: {len(args_list)}."
+            # )
             results = list(pool.map(call_remote_llm, args_list))
 
             for result in results:
@@ -99,18 +102,21 @@ def distill_on_dataset(
                     invalid_answers += 1
                     continue
 
+                cnt += 1
+
                 index, model_answer, model_reasoning = result
 
                 df.at[index, field_ans] = model_answer
                 df.at[index, field_reasoning] = model_reasoning
                 df.at[index, field_ans_correct] = check_answer_correct(df.iloc[index], model_answer)
 
-                print(
-                    f"response: {model_reasoning}\nextracted_answer: {model_answer}\ncorrect:{df.at[index, field_ans_correct]}\n\n"
-                )
+                if cnt < 5:
+                    print(
+                        f"response: {model_reasoning}\nextracted_answer: {model_answer}\ncorrect:{df.at[index, field_ans_correct]}\n\n"
+                    )
 
             if chunk_idx % dump_every == 0:
-                df.to_parquet(out_filename, index=False)
+                df.to_parquet(out_filename, compression=None, index=False)
 
     df.to_parquet(out_filename, index=False)
     print(f"Processed dataset {out_filename}. Total entries: {df.shape[0]}. Invalid answers: {invalid_answers}")
