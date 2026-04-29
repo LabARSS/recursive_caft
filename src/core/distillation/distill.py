@@ -20,7 +20,7 @@ def call_remote_llm(args):
             {"role": "user", "content": user_prompt},
         ]
 
-        # print(f"Calling LLM for index {index} with model {model}...")
+        print(f"Calling LLM for index {index} with model {model}...")
         completion = openrouter.chat.completions.create(
             model="deepseek/deepseek-v4-flash",
             messages=messages,
@@ -31,7 +31,7 @@ def call_remote_llm(args):
         )
 
         msg = completion.choices[0].message
-        # print(f"Received response for index {index}: {msg}")
+        print(f"Received response for index {index}: {len(msg)} characters")
 
         content = msg.content
         reasoning = getattr(msg, "reasoning")
@@ -91,9 +91,9 @@ def distill_on_dataset(
             if len(args_list) == 0:
                 continue
 
-            # print(
-            #     f"Processing chunk {chunk_idx}. Total entries in chunk: {len(chunk)}. Entries to process: {len(args_list)}."
-            # )
+            print(
+                f"Processing chunk {chunk_idx}. Total entries in chunk: {len(chunk)}. Entries to process: {len(args_list)}."
+            )
             results = list(pool.map(call_remote_llm, args_list))
 
             for result in results:
