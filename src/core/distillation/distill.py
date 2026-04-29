@@ -1,6 +1,7 @@
 import os
 import time
 from concurrent import futures
+from math import ceil
 
 import pandas as pd
 from tqdm import tqdm
@@ -8,6 +9,7 @@ from tqdm import tqdm
 from core.prompts.mmlu_single_token_answer import single_token_answer_prompt, single_token_sys_prompt
 from core.utils.chunker import chunker
 from core.utils.openrouter import openrouter
+from core.utils.validation import validate_mmlu_answer
 
 chunk_size = 16
 REQUEST_BUDGET_S = 180.0
@@ -15,7 +17,7 @@ REQUEST_BUDGET_S = 180.0
 
 def call_remote_llm(args):
     try:
-        sys_prompt, user_prompt, index, model, max_tokens = args
+        sys_prompt, user_prompt, index, model, max_tokens, timeout = args
 
         messages = [
             {"role": "system", "content": sys_prompt},
@@ -24,11 +26,11 @@ def call_remote_llm(args):
 
         t0 = time.monotonic()
         stream = openrouter.chat.completions.create(  # pyright: ignore[reportCallIssue]
-            model="deepseek/deepseek-v4-flash",
+            model=model,
             messages=messages,
             stream=True,
             extra_body={
-                "reasoning": {"enabled": True, "max_tokens": 8192},
+                "reasoning": {"enabled": True, "max_tokens": max_tokens},
                 "provider": {"order": ["deepseek"], "allow_fallbacks": False},
             },
         )
@@ -36,9 +38,9 @@ def call_remote_llm(args):
         content_parts = []
         reasoning_parts = []
         for chunk in stream:
-            if time.monotonic() - t0 > REQUEST_BUDGET_S:
+            if time.monotonic() - t0 > timeout:
                 stream.close()
-                raise TimeoutError(f"Exceeded {REQUEST_BUDGET_S}s wall-clock budget for index {index}")
+                raise TimeoutError(f"Exceeded {timeout}s wall-clock budget for index {index}")
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
@@ -69,6 +71,7 @@ def distill_on_dataset(
     model="deepseek/deepseek-v4-flash",
     get_sys_prompt=single_token_sys_prompt,
     get_user_prompt=single_token_answer_prompt,
+    timeout=REQUEST_BUDGET_S,
 ):
     invalid_answers = 0
     cnt = 0
@@ -90,21 +93,28 @@ def distill_on_dataset(
         df[field_ans] = ""
 
     with futures.ThreadPoolExecutor(max_workers=chunk_size) as pool:
-        for chunk_idx, chunk in tqdm(enumerate(chunker(df, chunk_size)), total=int(df.shape[0] / chunk_size)):
-            args_list = []
+        args_list = []
 
+        for chunk_idx, chunk in tqdm(enumerate(chunker(df, chunk_size)), total=ceil(df.shape[0] / chunk_size)):
             for index, row in chunk.iterrows():
                 if df.at[index, field_reasoning] != "":
                     continue
 
                 sys_prompt = get_sys_prompt(get_subject_from_row(row))
                 user_prompt = get_user_prompt(get_question_from_row(row), get_options_from_row(row))
-                args_list.append((sys_prompt, user_prompt, index, model, max_tokens))
+                args_list.append((sys_prompt, user_prompt, index, model, max_tokens, timeout))
 
             if len(args_list) == 0:
                 continue
 
+            print(
+                f"Processing chunk {chunk_idx} / {ceil(df.shape[0] / chunk_size) - 1} with {len(args_list)} entries..."
+            )
+            if len(args_list) < chunk_size and chunk_idx < ceil(df.shape[0] / chunk_size) - 1:
+                continue
+
             results = list(pool.map(call_remote_llm, args_list))
+            args_list = []
 
             for result in results:
                 if result is None:
@@ -115,9 +125,10 @@ def distill_on_dataset(
 
                 index, model_answer, model_reasoning = result
 
-                df.at[index, field_ans] = model_answer
-                df.at[index, field_reasoning] = model_reasoning
-                df.at[index, field_ans_correct] = check_answer_correct(df.iloc[index], model_answer)
+                if validate_mmlu_answer(model_answer):
+                    df.at[index, field_ans] = model_answer
+                    df.at[index, field_reasoning] = model_reasoning
+                    df.at[index, field_ans_correct] = check_answer_correct(df.iloc[index], model_answer)
 
                 if cnt < 5:
                     print(
