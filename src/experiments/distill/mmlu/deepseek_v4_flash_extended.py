@@ -22,5 +22,5 @@ if __name__ == "__main__":
         get_question_from_row=lambda row: row["question"],
         get_options_from_row=lambda row: ast.literal_eval(row["options"]),
         check_answer_correct=check_answer_correct_mmlu,
-        model="deepseek/deepseek-v4-pro",
+        model="qwen/qwen3.6-plus",
     )
