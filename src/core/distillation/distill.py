@@ -31,7 +31,6 @@ def call_remote_llm(args):
             stream=True,
             extra_body={
                 "reasoning": {"enabled": True, "max_tokens": max_tokens},
-                "provider": {"order": ["deepseek"], "allow_fallbacks": False},
             },
         )
 
