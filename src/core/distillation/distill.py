@@ -22,7 +22,6 @@ def call_remote_llm(args):
             {"role": "user", "content": user_prompt},
         ]
 
-        print(f"Calling LLM for index {index} with model {model}...")
         t0 = time.monotonic()
         stream = openrouter.chat.completions.create(  # pyright: ignore[reportCallIssue]
             model="deepseek/deepseek-v4-flash",
@@ -51,10 +50,6 @@ def call_remote_llm(args):
 
         content = "".join(content_parts)
         reasoning = "".join(reasoning_parts) if reasoning_parts else None
-
-        print(
-            f"Received response for index {index}:\n\n{reasoning}\n\n{content}\n\n"}"
-        )
 
         return index, content, reasoning
     except Exception as e:
@@ -87,8 +82,6 @@ def distill_on_dataset(
     else:
         df = pd.read_parquet(in_filename)
 
-    # print(df.dtypes)
-
     if field_ans_correct not in df.columns:
         df[field_ans_correct] = False
     if field_reasoning not in df.columns:
@@ -111,9 +104,6 @@ def distill_on_dataset(
             if len(args_list) == 0:
                 continue
 
-            print(
-                f"Processing chunk {chunk_idx}. Total entries in chunk: {len(chunk)}. Entries to process: {len(args_list)}."
-            )
             results = list(pool.map(call_remote_llm, args_list))
 
             for result in results:
