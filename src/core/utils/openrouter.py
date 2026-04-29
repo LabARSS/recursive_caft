@@ -6,6 +6,6 @@ from openai import OpenAI
 openrouter = OpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=os.environ.get("OPENROUTER_API_TOKEN"),
-    timeout=httpx.Timeout(connect=15.0, read=30.0, write=15.0, pool=15.0),
+    timeout=httpx.Timeout(connect=15.0, read=60.0, write=15.0, pool=15.0),
     max_retries=0,
 )

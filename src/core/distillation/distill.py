@@ -1,4 +1,5 @@
 import os
+import time
 from concurrent import futures
 
 import pandas as pd
@@ -9,6 +10,7 @@ from core.utils.chunker import chunker
 from core.utils.openrouter import openrouter
 
 chunk_size = 16
+REQUEST_BUDGET_S = 180.0
 
 
 def call_remote_llm(args):
@@ -21,22 +23,37 @@ def call_remote_llm(args):
         ]
 
         print(f"Calling LLM for index {index} with model {model}...")
-        completion = openrouter.chat.completions.create(
+        t0 = time.monotonic()
+        stream = openrouter.chat.completions.create(  # pyright: ignore[reportCallIssue]
             model="deepseek/deepseek-v4-flash",
             messages=messages,
+            stream=True,
             extra_body={
                 "reasoning": {"enabled": True, "max_tokens": 8192},
                 "provider": {"order": ["deepseek"], "allow_fallbacks": False},
             },
         )
 
-        msg = completion.choices[0].message
+        content_parts = []
+        reasoning_parts = []
+        for chunk in stream:
+            if time.monotonic() - t0 > REQUEST_BUDGET_S:
+                stream.close()
+                raise TimeoutError(f"Exceeded {REQUEST_BUDGET_S}s wall-clock budget for index {index}")
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if delta.content:
+                content_parts.append(delta.content)
+            reasoning_piece = getattr(delta, "reasoning", None)
+            if reasoning_piece:
+                reasoning_parts.append(reasoning_piece)
 
-        content = msg.content
-        reasoning = getattr(msg, "reasoning")
+        content = "".join(content_parts)
+        reasoning = "".join(reasoning_parts) if reasoning_parts else None
 
         print(
-            f"Received response for index {index}: {len(content)} characters ({len(reasoning) if reasoning else 0} reasoning characters)"
+            f"Received response for index {index}:\n\n{reasoning}\n\n{content}\n\n"}"
         )
 
         return index, content, reasoning
