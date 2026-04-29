@@ -31,10 +31,13 @@ def call_remote_llm(args):
         )
 
         msg = completion.choices[0].message
-        print(f"Received response for index {index}: {len(msg)} characters")
 
         content = msg.content
         reasoning = getattr(msg, "reasoning")
+
+        print(
+            f"Received response for index {index}: {len(content)} characters ({len(reasoning) if reasoning else 0} reasoning characters)"
+        )
 
         return index, content, reasoning
     except Exception as e:
