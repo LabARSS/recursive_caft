@@ -30,6 +30,7 @@ if __name__ == "__main__":
                     dataset_id="mmlu_pro_stem",
                 ),
             ),
+            timeout=600.0,
         ),
         distillation_result_writer=ExplainedAnswerResultWriter(),
     )
