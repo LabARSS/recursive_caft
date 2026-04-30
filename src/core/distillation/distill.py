@@ -1,7 +1,7 @@
 import os
+import queue
+import threading
 import time
-from concurrent import futures
-from math import ceil
 from pathlib import Path
 
 import pandas as pd
@@ -9,11 +9,25 @@ from pydraconf import PydraConfig
 from tqdm import tqdm
 
 from core.datasets.qa_dataset import QADataset, QADatasetConfig
-from core.utils.chunker import chunker
 from core.utils.openrouter import openrouter
 
-chunk_size = 16
+pool_size = 30
 REQUEST_BUDGET_S = 180.0
+
+
+def _worker(input_q: queue.Queue, output_q: queue.Queue):
+    while True:
+        item = input_q.get()
+        if item is None:
+            input_q.task_done()
+            break
+        try:
+            result = call_remote_llm(item)
+        except Exception as e:
+            print(f"Worker error: {e}")
+            result = None
+        output_q.put(result)
+        input_q.task_done()
 
 
 def call_remote_llm(args):
@@ -63,7 +77,7 @@ class DistillationConfig(PydraConfig):
     out_filename: str
     model: str
     dataset: QADataset[QADatasetConfig]
-    dump_every: int = 500
+    dump_every: int = 100
     max_tokens: int = 8192
     timeout: float = REQUEST_BUDGET_S
     regenerate_incorrect: bool = False
@@ -110,49 +124,53 @@ def distill_on_dataset(
     if config.field_ans not in df.columns:
         df[config.field_ans] = ""
 
-    with futures.ThreadPoolExecutor(max_workers=chunk_size * 2) as pool:
-        args_list = []
+    input_q: queue.Queue = queue.Queue()
+    output_q: queue.Queue = queue.Queue()
 
-        for chunk_idx, chunk in tqdm(enumerate(chunker(df, chunk_size)), total=ceil(df.shape[0] / chunk_size)):
-            for index, row in chunk.iterrows():
-                row_dict = row.to_dict()
+    expected = 0
+    for index, row in df.iterrows():
+        row_dict = row.to_dict()
 
-                if not config.regenerate_incorrect and row_dict[config.field_reasoning] != "":
-                    continue
+        if not config.regenerate_incorrect and row_dict[config.field_reasoning] != "":
+            continue
 
-                if config.regenerate_incorrect and row_dict[config.field_ans_correct]:
-                    continue
+        if config.regenerate_incorrect and row_dict[config.field_ans_correct]:
+            continue
 
-                sys_prompt = config.dataset.system_prompt(row_dict)
-                user_prompt = config.dataset.user_prompt(row_dict)
-                args_list.append((sys_prompt, user_prompt, index, config.model, config.max_tokens, config.timeout))
+        sys_prompt = config.dataset.system_prompt(row_dict)
+        user_prompt = config.dataset.user_prompt(row_dict)
+        input_q.put((sys_prompt, user_prompt, index, config.model, config.max_tokens, config.timeout))
+        expected += 1
 
-            if len(args_list) == 0:
+    for _ in range(pool_size):
+        input_q.put(None)
+
+    threads = [threading.Thread(target=_worker, args=(input_q, output_q), daemon=True) for _ in range(max_workers)]
+    for t in threads:
+        t.start()
+
+    with tqdm(total=expected) as pbar:
+        for _ in range(expected):
+            result = output_q.get()
+            pbar.update(1)
+
+            if result is None:
+                invalid_answers += 1
                 continue
 
-            if len(args_list) < chunk_size and chunk_idx < ceil(df.shape[0] / chunk_size) - 1:
-                continue
+            cnt += 1
+            distillation_result_writer.write_to_df(df, config, result)
 
-            results = list(pool.map(call_remote_llm, args_list))
-            args_list = []
-
-            for result in results:
-                if result is None:
-                    invalid_answers += 1
-                    continue
-
-                cnt += 1
-
-                distillation_result = result
-                distillation_result_writer.write_to_df(df, config, distillation_result)
-
-                if cnt < 5:
-                    print(
-                        f"response: {distillation_result.reasoning}\nextracted_answer: {distillation_result.answer}\ncorrect:{df.at[distillation_result.index, config.field_ans_correct]}\n\n"
-                    )
+            if cnt < 5:
+                print(
+                    f"response: {result.reasoning}\nextracted_answer: {result.answer}\ncorrect:{df.at[result.index, config.field_ans_correct]}\n\n"
+                )
 
             if cnt % config.dump_every == 0:
                 df.to_parquet(tmp_path, compression=None, index=False)
+
+    for t in threads:
+        t.join()
 
     df.to_parquet(config.out_filename, index=False)
     if os.path.exists(tmp_path):
