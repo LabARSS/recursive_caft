@@ -71,6 +71,7 @@ def distill_on_dataset(
     get_sys_prompt=single_token_sys_prompt,
     get_user_prompt=single_token_answer_prompt,
     timeout=REQUEST_BUDGET_S,
+    regenerate_incorrect=False,
 ):
     invalid_answers = 0
     cnt = 0
@@ -91,12 +92,15 @@ def distill_on_dataset(
     if field_ans not in df.columns:
         df[field_ans] = ""
 
-    with futures.ThreadPoolExecutor(max_workers=chunk_size) as pool:
+    with futures.ThreadPoolExecutor(max_workers=chunk_size * 2) as pool:
         args_list = []
 
         for chunk_idx, chunk in tqdm(enumerate(chunker(df, chunk_size)), total=ceil(df.shape[0] / chunk_size)):
             for index, row in chunk.iterrows():
-                if df.at[index, field_reasoning] != "":
+                if not regenerate_incorrect and df.at[index, field_reasoning] != "":
+                    continue
+
+                if regenerate_incorrect and df.at[index, field_ans_correct]:
                     continue
 
                 sys_prompt = get_sys_prompt(get_subject_from_row(row))
