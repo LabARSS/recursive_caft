@@ -11,7 +11,7 @@ if __name__ == "__main__":
         DistillationConfig(
             out_filename=str(
                 Path(__file__).parent.joinpath(
-                    "../../../../data/out/distillation/mmlu_distilled_deepseek_v4_flash_regenerate_incorrect_w_large.parquet"
+                    "../../../../../data/out/distillation/mmlu_distilled_deepseek_v4_flash_regenerate_incorrect_w_large.parquet"
                 )
             ),
             model="deepseek/deepseek-v4-pro",
@@ -20,7 +20,7 @@ if __name__ == "__main__":
                 config=QADatasetConfig(
                     path=str(
                         Path(__file__).parent.joinpath(
-                            "../../../../data/out/distillation/mmlu_distilled_deepseek_v4_flash_extend_w_large.parquet"
+                            "../../../../../data/out/distillation/mmlu_distilled_deepseek_v4_flash_extend_w_large.parquet"
                         )
                     ),
                     dataset_id="mmlu_distilled_deepseek_v4_flash_extend_w_large",

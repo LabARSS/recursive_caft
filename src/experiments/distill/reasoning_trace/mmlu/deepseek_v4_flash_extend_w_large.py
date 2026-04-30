@@ -11,15 +11,19 @@ if __name__ == "__main__":
         DistillationConfig(
             out_filename=str(
                 Path(__file__).parent.joinpath(
-                    "../../../../data/out/distillation/mmlu_distilled_deepseek_v4_flash.parquet"
+                    "../../../../../data/out/distillation/mmlu_distilled_deepseek_v4_flash_extend_w_large.parquet"
                 )
             ),
-            model="deepseek/deepseek-v4-flash",
+            model="deepseek/deepseek-v4-pro",
             dataset=MMLUSingleTokenResponseDataset(
                 tokenizer=None,  # type: ignore[reportArgumentType]
                 config=QADatasetConfig(
-                    path=str(Path(__file__).parent.joinpath("../../../../data/source/mmlu_pro_stem.parquet")),
-                    dataset_id="mmlu_pro_stem",
+                    path=str(
+                        Path(__file__).parent.joinpath(
+                            "../../../../../data/out/distillation/mmlu_distilled_deepseek_v4_flash.parquet"
+                        )
+                    ),
+                    dataset_id="mmlu_distilled_deepseek_v4_flash",
                 ),
             ),
         )
