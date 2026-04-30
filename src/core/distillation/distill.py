@@ -145,7 +145,7 @@ def distill_on_dataset(
     for _ in range(pool_size):
         input_q.put(None)
 
-    threads = [threading.Thread(target=_worker, args=(input_q, output_q), daemon=True) for _ in range(max_workers)]
+    threads = [threading.Thread(target=_worker, args=(input_q, output_q), daemon=True) for _ in range(pool_size)]
     for t in threads:
         t.start()
 
