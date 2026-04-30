@@ -15,7 +15,7 @@ if __name__ == "__main__":
         ),
         out_filename=str(
             Path(__file__).parent.joinpath(
-                "../../../../data/out/distillation/mmlu_distilled_deepseek_v4_flash_extended.parquet"
+                "../../../../data/out/distillation/mmlu_distilled_deepseek_v4_flash_extend_w_large.parquet"
             )
         ),
         get_subject_from_row=lambda row: row["base_cluster"],
