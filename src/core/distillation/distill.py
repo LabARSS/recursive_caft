@@ -2,14 +2,15 @@ import os
 import time
 from concurrent import futures
 from math import ceil
+from pathlib import Path
 
 import pandas as pd
+from pydraconf import PydraConfig
 from tqdm import tqdm
 
-from core.prompts.mmlu_single_token_answer import single_token_answer_prompt, single_token_sys_prompt
+from core.datasets.qa_dataset import QADataset, QADatasetConfig
 from core.utils.chunker import chunker
 from core.utils.openrouter import openrouter
-from core.utils.validation import validate_mmlu_answer
 
 chunk_size = 16
 REQUEST_BUDGET_S = 180.0
@@ -58,20 +59,18 @@ def call_remote_llm(args):
         return None
 
 
+class DistillationConfig(PydraConfig):
+    out_filename: str
+    model: str
+    dataset: QADataset[QADatasetConfig]
+    dump_every: int = 500
+    max_tokens: int = 8192
+    timeout: float = REQUEST_BUDGET_S
+    regenerate_incorrect: bool = False
+
+
 def distill_on_dataset(
-    in_filename,
-    out_filename,
-    get_subject_from_row,
-    get_question_from_row,
-    get_options_from_row,
-    check_answer_correct,
-    dump_every=50,
-    max_tokens=8192,
-    model="deepseek/deepseek-v4-flash",
-    get_sys_prompt=single_token_sys_prompt,
-    get_user_prompt=single_token_answer_prompt,
-    timeout=REQUEST_BUDGET_S,
-    regenerate_incorrect=False,
+    config: DistillationConfig,
 ):
     invalid_answers = 0
     cnt = 0
@@ -80,10 +79,14 @@ def distill_on_dataset(
     field_ans = "distill_answer"
     field_ans_correct = "distill_ans_correct"
 
-    if os.path.exists(out_filename):
-        df = pd.read_parquet(out_filename)
+    tmp_path = Path(config.out_filename).with_suffix(".tmp.parquet")
+
+    if os.path.exists(tmp_path):
+        df = pd.read_parquet(tmp_path)
+    elif os.path.exists(config.out_filename):
+        df = pd.read_parquet(config.out_filename)
     else:
-        df = pd.read_parquet(in_filename)
+        df = pd.read_parquet(config.dataset.processed_path)
 
     if field_ans_correct not in df.columns:
         df[field_ans_correct] = False
@@ -97,22 +100,21 @@ def distill_on_dataset(
 
         for chunk_idx, chunk in tqdm(enumerate(chunker(df, chunk_size)), total=ceil(df.shape[0] / chunk_size)):
             for index, row in chunk.iterrows():
-                if not regenerate_incorrect and df.at[index, field_reasoning] != "":
+                row_dict = row.to_dict()
+
+                if not config.regenerate_incorrect and row_dict[field_reasoning] != "":
                     continue
 
-                if regenerate_incorrect and df.at[index, field_ans_correct]:
+                if config.regenerate_incorrect and row_dict[field_ans_correct]:
                     continue
 
-                sys_prompt = get_sys_prompt(get_subject_from_row(row))
-                user_prompt = get_user_prompt(get_question_from_row(row), get_options_from_row(row))
-                args_list.append((sys_prompt, user_prompt, index, model, max_tokens, timeout))
+                sys_prompt = config.dataset.system_prompt(row_dict)
+                user_prompt = config.dataset.user_prompt(row_dict)
+                args_list.append((sys_prompt, user_prompt, index, config.model, config.max_tokens, config.timeout))
 
             if len(args_list) == 0:
                 continue
 
-            print(
-                f"Processing chunk {chunk_idx} / {ceil(df.shape[0] / chunk_size) - 1} with {len(args_list)} entries..."
-            )
             if len(args_list) < chunk_size and chunk_idx < ceil(df.shape[0] / chunk_size) - 1:
                 continue
 
@@ -128,19 +130,23 @@ def distill_on_dataset(
 
                 index, model_answer, model_reasoning = result
 
-                if validate_mmlu_answer(model_answer):
-                    df.at[index, field_ans] = model_answer
-                    df.at[index, field_reasoning] = model_reasoning
-                    df.at[index, field_ans_correct] = check_answer_correct(df.iloc[index], model_answer)
+                df.at[index, field_ans] = model_answer
+                df.at[index, field_reasoning] = model_reasoning
+                df.at[index, field_ans_correct] = config.dataset.verify_assistant_response(
+                    df.iloc[index], model_answer
+                )[1]
 
                 if cnt < 5:
                     print(
                         f"response: {model_reasoning}\nextracted_answer: {model_answer}\ncorrect:{df.at[index, field_ans_correct]}\n\n"
                     )
 
-            if chunk_idx % dump_every == 0:
-                df.to_parquet(out_filename, compression=None, index=False)
+            if cnt % config.dump_every == 0:
+                df.to_parquet(tmp_path, compression=None, index=False)
 
-    df.to_parquet(out_filename, index=False)
-    print(f"Processed dataset {out_filename}. Total entries: {df.shape[0]}. Invalid answers: {invalid_answers}")
+    df.to_parquet(config.out_filename, index=False)
+    if os.path.exists(tmp_path):
+        os.unlink(tmp_path)
+
+    print(f"Processed dataset {config.out_filename}. Total entries: {df.shape[0]}. Invalid answers: {invalid_answers}")
     return df

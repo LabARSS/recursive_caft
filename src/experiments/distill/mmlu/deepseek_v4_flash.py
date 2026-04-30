@@ -1,21 +1,26 @@
-import ast
 from multiprocessing import freeze_support
 from pathlib import Path
 
-from core.distillation.distill import distill_on_dataset
-from core.utils.correctness import check_answer_correct_mmlu
+from core.datasets.mmlu.mmlu_single_token_response_dataset import MMLUSingleTokenResponseDataset, QADatasetConfig
+from core.distillation.distill import DistillationConfig, distill_on_dataset
 
 if __name__ == "__main__":
     freeze_support()
 
     distill_on_dataset(
-        in_filename=str(Path(__file__).parent.joinpath("../../../../data/source/mmlu_pro_stem.parquet")),
-        out_filename=str(
-            Path(__file__).parent.joinpath("../../../../data/out/distillation/mmlu_distilled_deepseek_v4_flash.parquet")
-        ),
-        get_subject_from_row=lambda row: row["base_cluster"],
-        get_question_from_row=lambda row: row["question"],
-        get_options_from_row=lambda row: ast.literal_eval(row["options"]),
-        check_answer_correct=check_answer_correct_mmlu,
-        model="deepseek/deepseek-v4-pro",
+        DistillationConfig(
+            out_filename=str(
+                Path(__file__).parent.joinpath(
+                    "../../../../data/out/distillation/mmlu_distilled_deepseek_v4_flash.parquet"
+                )
+            ),
+            model="deepseek/deepseek-v4-flash",
+            dataset=MMLUSingleTokenResponseDataset(
+                tokenizer=None,  # type: ignore[reportArgumentType]
+                config=QADatasetConfig(
+                    path=str(Path(__file__).parent.joinpath("../../../../data/source/mmlu_pro_stem.parquet")),
+                    dataset_id="mmlu_pro_stem",
+                ),
+            ),
+        )
     )
