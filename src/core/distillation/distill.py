@@ -163,7 +163,7 @@ def distill_on_dataset(
 
             if cnt < 5:
                 print(
-                    f"response: {result.reasoning}\nextracted_answer: {result.answer}\ncorrect:{df.at[result.index, config.field_ans_correct]}\n\n"
+                    f"response: {df.at[result.index, config.field_reasoning]}\nextracted_answer: {df.at[result.index, config.field_ans]}\ncorrect:{df.at[result.index, config.field_ans_correct]}\n\n"
                 )
 
             if cnt % config.dump_every == 0:
