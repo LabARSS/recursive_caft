@@ -53,7 +53,7 @@ def call_remote_llm(args):
         content = "".join(content_parts)
         reasoning = "".join(reasoning_parts) if reasoning_parts else None
 
-        return index, content, reasoning
+        return DistillationResult(index=index, answer=content, reasoning=reasoning)
     except Exception as e:
         print(f"Error occurred: {e}")
         return None
@@ -67,17 +67,32 @@ class DistillationConfig(PydraConfig):
     max_tokens: int = 8192
     timeout: float = REQUEST_BUDGET_S
     regenerate_incorrect: bool = False
+    field_reasoning: str = "distill_reasoning"
+    field_ans: str = "distill_answer"
+    field_ans_correct: str = "distill_ans_correct"
+
+
+class DistillationResult(PydraConfig):
+    index: int
+    answer: str
+    reasoning: str | None
+
+
+class DistillationResultWriter:
+    def write_to_df(self, df: pd.DataFrame, config: DistillationConfig, result: DistillationResult):
+        df.at[result.index, config.field_ans] = result.answer
+        df.at[result.index, config.field_reasoning] = result.reasoning
+        df.at[result.index, config.field_ans_correct] = config.dataset.verify_assistant_response(
+            df.iloc[result.index].to_dict(), result.answer
+        )[1]
 
 
 def distill_on_dataset(
     config: DistillationConfig,
+    distillation_result_writer: DistillationResultWriter = DistillationResultWriter(),
 ):
     invalid_answers = 0
     cnt = 0
-
-    field_reasoning = "distill_reasoning"
-    field_ans = "distill_answer"
-    field_ans_correct = "distill_ans_correct"
 
     tmp_path = Path(config.out_filename).with_suffix(".tmp.parquet")
 
@@ -88,12 +103,12 @@ def distill_on_dataset(
     else:
         df = pd.read_parquet(config.dataset.processed_path)
 
-    if field_ans_correct not in df.columns:
-        df[field_ans_correct] = False
-    if field_reasoning not in df.columns:
-        df[field_reasoning] = ""
-    if field_ans not in df.columns:
-        df[field_ans] = ""
+    if config.field_ans_correct not in df.columns:
+        df[config.field_ans_correct] = False
+    if config.field_reasoning not in df.columns:
+        df[config.field_reasoning] = ""
+    if config.field_ans not in df.columns:
+        df[config.field_ans] = ""
 
     with futures.ThreadPoolExecutor(max_workers=chunk_size * 2) as pool:
         args_list = []
@@ -102,10 +117,10 @@ def distill_on_dataset(
             for index, row in chunk.iterrows():
                 row_dict = row.to_dict()
 
-                if not config.regenerate_incorrect and row_dict[field_reasoning] != "":
+                if not config.regenerate_incorrect and row_dict[config.field_reasoning] != "":
                     continue
 
-                if config.regenerate_incorrect and row_dict[field_ans_correct]:
+                if config.regenerate_incorrect and row_dict[config.field_ans_correct]:
                     continue
 
                 sys_prompt = config.dataset.system_prompt(row_dict)
@@ -128,17 +143,12 @@ def distill_on_dataset(
 
                 cnt += 1
 
-                index, model_answer, model_reasoning = result
-
-                df.at[index, field_ans] = model_answer
-                df.at[index, field_reasoning] = model_reasoning
-                df.at[index, field_ans_correct] = config.dataset.verify_assistant_response(
-                    df.iloc[index], model_answer
-                )[1]
+                distillation_result = result
+                distillation_result_writer.write_to_df(df, config, distillation_result)
 
                 if cnt < 5:
                     print(
-                        f"response: {model_reasoning}\nextracted_answer: {model_answer}\ncorrect:{df.at[index, field_ans_correct]}\n\n"
+                        f"response: {distillation_result.reasoning}\nextracted_answer: {distillation_result.answer}\ncorrect:{df.at[distillation_result.index, config.field_ans_correct]}\n\n"
                     )
 
             if cnt % config.dump_every == 0:
