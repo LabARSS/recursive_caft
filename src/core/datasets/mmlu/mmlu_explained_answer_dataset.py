@@ -16,7 +16,7 @@ class MMLUExplainedAnswerDataset(QADataset[QADatasetConfig]):
     @override
     def system_prompt(self, row: dict) -> str:
         subject = row["base_cluster"]
-        return f"The following is a multiple choice question about {subject}. The correct answer is provided to you, but your task is to produce a chain-of-thought that reads as if you were solving the question from scratch — including any natural uncertainty, consideration of multiple options, or self-correction. Do not state or imply that the answer was given to you. End your response with Answer: <letter>."
+        return f"The following is a multiple choice question about {subject}. The correct answer is provided to you, but your task is to produce a detailed chain-of-thought with step-by-step reasoning that reads as if you were solving the question from scratch — including any natural uncertainty, consideration of multiple options, or self-correction. Do not state or imply that the answer was given to you. End your response with Answer: <letter>."
 
     @override
     def user_prompt(self, row: dict) -> str:
