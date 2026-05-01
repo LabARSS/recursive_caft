@@ -25,7 +25,7 @@ if __name__ == "__main__":
     df = distill_on_dataset(
         DistillationConfig(
             out_filename=out_filename,
-            model="deepseek/deepseek-v4-pro",
+            model="qwen/qwen3.6-plus",
             dataset=MMLUCorrectedAnswerDataset(
                 tokenizer=None,  # type: ignore[reportArgumentType]
                 config=QADatasetConfig(
