@@ -34,7 +34,8 @@ if __name__ == "__main__":
                     dataset_id="mmlu_explained_answer_deepseek_v4_flash",
                 ),
             ),
-            timeout=600.0,
+            timeout=1800.0,
+            dump_every=10,
         ),
         distillation_result_writer=ExplainedAnswerResultWriter(),
     )
