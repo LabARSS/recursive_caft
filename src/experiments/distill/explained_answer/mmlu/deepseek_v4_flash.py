@@ -1,7 +1,8 @@
 from multiprocessing import freeze_support
 from pathlib import Path
 
-from core.datasets.mmlu.mmlu_explained_answer_dataset import MMLUExplainedAnswerDataset, QADatasetConfig
+from core.datasets.mmlu.mmlu_explained_answer_dataset import MMLUExplainedAnswerDataset
+from core.datasets.qa_dataset import QADatasetConfig
 from core.distillation.distill import DistillationConfig, DistillationResultWriter, distill_on_dataset
 
 

@@ -1,18 +1,10 @@
 import ast
-import string
 from typing import override
 
-from transformers import PreTrainedTokenizer
-
-from core.datasets.qa_dataset import QADataset, QADatasetConfig
+from core.datasets.mmlu.mmlu_single_token_response_dataset import MMLUSingleTokenResponseDataset
 
 
-class MMLUExplainedAnswerDataset(QADataset[QADatasetConfig]):
-    def __init__(self, tokenizer: PreTrainedTokenizer, config: QADatasetConfig):
-        super().__init__(tokenizer, config)
-
-        self.option_ids = list(string.ascii_lowercase)
-
+class MMLUExplainedAnswerDataset(MMLUSingleTokenResponseDataset):
     @override
     def system_prompt(self, row: dict) -> str:
         subject = row["base_cluster"]

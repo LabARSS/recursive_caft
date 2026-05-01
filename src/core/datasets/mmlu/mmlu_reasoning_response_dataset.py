@@ -6,8 +6,8 @@ from core.datasets.mmlu.mmlu_single_token_response_dataset import MMLUSingleToke
 class MMLUReasoningResponseDataset(MMLUSingleTokenResponseDataset):
     @override
     def assistant_response(self, row: dict) -> str:
-        reasoning_chain = row["thinking"].strip()
-        answer = str(row["answer"]).strip().lower()
+        reasoning_chain = row["distill_reasoning"].strip()
+        answer = str(row["distill_answer"]).strip().lower()
         return f"{self.tokenizer.thinking_start_token}{reasoning_chain}{self.tokenizer.thinking_end_token}{answer}"
 
     @override
