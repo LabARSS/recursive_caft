@@ -37,7 +37,6 @@ if __name__ == "__main__":
                     dataset_id="mmlu_distilled_deepseek_v4_flash_regenerate_incorrect_w_large",
                 ),
             ),
-            timeout=600.0,
             field_reasoning="corrected_reasoning",
             regenerate_incorrect=True,
         ),
