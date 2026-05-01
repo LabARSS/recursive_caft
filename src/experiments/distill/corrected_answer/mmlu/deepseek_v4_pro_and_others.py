@@ -1,6 +1,8 @@
 from multiprocessing import freeze_support
 from pathlib import Path
 
+import pandas as pd
+
 from core.datasets.mmlu.mmlu_corrected_answer_dataset import MMLUCorrectedAnswerDataset
 from core.datasets.qa_dataset import QADatasetConfig
 from core.distillation.distill import DistillationConfig, DistillationResultWriter, distill_on_dataset
@@ -43,11 +45,22 @@ if __name__ == "__main__":
         distillation_result_writer=CorrectedAnswerResultWriter(),
     )
 
-    has_correction = df["corrected_reasoning"].astype(str).str.len() > 0
-    df.loc[has_correction, "distill_reasoning"] = (
-        df.loc[has_correction, "distill_reasoning"].astype(str)
-        + "\n"
-        + df.loc[has_correction, "corrected_reasoning"].astype(str)
-    )
+    if df["distill_ans_correct"].all():
+        distill_reasoning = df["distill_reasoning"].astype(str)
+        corrected_reasoning = df["corrected_reasoning"].astype(str)
+        has_correction = corrected_reasoning.str.len() > 0
+        ends_with_correction = pd.Series(
+            [d.endswith("\n" + c) for d, c in zip(distill_reasoning, corrected_reasoning)],
+            index=df.index,
+        )
+        already_concatenated = has_correction & ends_with_correction
 
-    df.to_parquet(out_filename, index=False)
+        if already_concatenated.any():
+            print(
+                f"Skipping concatenation: {already_concatenated.sum()} rows already have corrected_reasoning appended to distill_reasoning."
+            )
+        else:
+            df.loc[has_correction, "distill_reasoning"] = (
+                distill_reasoning[has_correction] + "\n" + corrected_reasoning[has_correction]
+            )
+            df.to_parquet(out_filename, index=False)
