@@ -9,20 +9,22 @@ from core.distillation.distill import DistillationConfig, DistillationResultWrit
 class CorrectedAnswerResultWriter(DistillationResultWriter):
     def write_to_df(self, df, config, result):
         df.at[result.index, config.field_ans] = config.dataset.assistant_response(df.iloc[result.index].to_dict())
-        df.at[result.index, config.field_reasoning] = f"{df.at[result.index, 'distill_reasoning']}\n{result.answer}"
+        df.at[result.index, config.field_reasoning] = result.answer
         df.at[result.index, config.field_ans_correct] = True
 
 
 if __name__ == "__main__":
     freeze_support()
 
-    distill_on_dataset(
+    out_filename = str(
+        Path(__file__).parent.joinpath(
+            "../../../../../data/out/distillation/mmlu_corrected_answer_deepseek_v4_pro_and_others.parquet"
+        )
+    )
+
+    df = distill_on_dataset(
         DistillationConfig(
-            out_filename=str(
-                Path(__file__).parent.joinpath(
-                    "../../../../../data/out/distillation/mmlu_corrected_answer_deepseek_v4_pro_and_others.parquet"
-                )
-            ),
+            out_filename=out_filename,
             model="deepseek/deepseek-v4-pro",
             dataset=MMLUCorrectedAnswerDataset(
                 tokenizer=None,  # type: ignore[reportArgumentType]
@@ -36,6 +38,17 @@ if __name__ == "__main__":
                 ),
             ),
             timeout=600.0,
+            field_reasoning="corrected_reasoning",
+            regenerate_incorrect=True,
         ),
         distillation_result_writer=CorrectedAnswerResultWriter(),
     )
+
+    has_correction = df["corrected_reasoning"].astype(str).str.len() > 0
+    df.loc[has_correction, "distill_reasoning"] = (
+        df.loc[has_correction, "distill_reasoning"].astype(str)
+        + "\n"
+        + df.loc[has_correction, "corrected_reasoning"].astype(str)
+    )
+
+    df.to_parquet(out_filename, index=False)
