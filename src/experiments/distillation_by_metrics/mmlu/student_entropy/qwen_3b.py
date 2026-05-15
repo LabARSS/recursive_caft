@@ -11,12 +11,17 @@ from core.datasets.mmlu.mmlu_reasoning_response_dataset import MMLUReasoningResp
 from core.datasets.mmlu.mmlu_single_token_response_dataset import MMLUSingleTokenResponseDataset
 from core.datasets.qa_dataset import QADatasetConfig
 from core.datasets.qa_dataset_adapter import QADatasetAdapter
-from core.training.lora_trainer import LoRATrainingArgs
+from core.evaluation.multi_checkpoint_evaluator import (
+    GenerationConfig,
+    MultiCheckpointEvaluator,
+    MultiCheckpointEvaluatorConfig,
+)
+from core.training.lora_trainer import LoRASpecificTrainingArgs, LoRATrainingArgs
 from core.training.resampling_trainer import ResamplingTrainer, ResamplingTrainerConfig
 from core.training.thinking_tokens import setup_thinking_tokens
 from core.utils.datasets import add_average_column, merge_mmlu_on_question_id
 
-MODEL_NAME = Path(__file__).resolve().parents[4].joinpath("artifacts/base_models_v0/qwen_3b").as_posix()
+MODEL_NAME = Path(__file__).resolve().parents[5].joinpath("artifacts/base_models_v0/qwen_3b").as_posix()
 OUT_PATH = Path(__file__).parent.joinpath("../../../../../artifacts/train_pipeline/mmlu/student_entropy/qwen_3b/")
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
@@ -47,6 +52,7 @@ trainer = ResamplingTrainer(
             num_train_epochs=20,
             per_device_train_batch_size=4,
         ),
+        lora_training_args=LoRASpecificTrainingArgs(train_thinking_token_embeddings=True),
         out_path=OUT_PATH.as_posix(),
         model_id=MODEL_NAME,
         train_dataset=CausalDatasetAdapter(
@@ -78,3 +84,27 @@ trainer = ResamplingTrainer(
     ),
     tokenizer=tokenizer,
 )
+trainer.train()
+trainer.unload()
+
+cot_evaluator = MultiCheckpointEvaluator(
+    config=MultiCheckpointEvaluatorConfig(
+        checkpoints_dir=OUT_PATH.as_posix(),
+        eval_dataset=QADatasetAdapter(
+            dataset=MMLUReasoningResponseDataset(
+                config=QADatasetConfig(
+                    path=Path(__file__)
+                    .parent.joinpath("../../../../../data/out/splits/random/mmlu/test.parquet")
+                    .as_posix(),
+                    dataset_id="mmlu_random_test",
+                ),
+                tokenizer=tokenizer,
+            ),
+            add_thinking_start_token=True,
+        ),
+        generation=GenerationConfig(max_new_tokens=8500, max_thinking_tokens=8192, max_batch_size=1024),
+        summary_filename="summary_reasoning_evals.json",
+    ),
+    tokenizer=tokenizer,
+)
+cot_evaluator.evaluate_all()
