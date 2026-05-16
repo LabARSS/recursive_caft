@@ -7,9 +7,12 @@ from typing import Optional
 
 import psutil
 import torch
+import torch.nn.functional as F
 from tqdm import tqdm
 from transformers import DynamicCache, PreTrainedModel, PreTrainedTokenizer
 from transformers.cache_utils import _static_cache_update
+
+import transformers.modeling_flash_attention_utils as _flash_utils
 
 from core.utils.logger import logger
 
@@ -235,8 +238,10 @@ class BatchGenerator:
         self._vram_check_interval = 50  # periodic free-VRAM safety check every N decode steps
         self._vram_reduced_bs: int | None = None  # sticky reduced bs after VRAM pressure
         self._usable_vram: int | None = None  # measured once after prefill
+        self._current_max_seqlen: int = 0  # set before each forward call for _get_unpad_data
 
         self._patch_causal_mask(self._uncompiled_model)
+        self._install_unpad_cache()
 
     @staticmethod
     def _patch_causal_mask(model: PreTrainedModel) -> None:
@@ -272,12 +277,47 @@ class BatchGenerator:
             self, attention_mask, input_tensor, cache_position, past_key_values, output_attentions=False
         ):
             if self.config._attn_implementation == "flash_attention_2":
-                if attention_mask is not None and torch.any(attention_mask == 0):
-                    return attention_mask
-                return None
+                # Always return the mask for FA2. In batched decode the mask
+                # always contains zeros (padding) so the torch.any() check was
+                # redundant and caused a GPU→CPU sync + torch.compile graph break.
+                return attention_mask
             return original(attention_mask, input_tensor, cache_position, past_key_values, output_attentions)
 
         candidate._update_causal_mask = types.MethodType(_update_causal_mask, candidate)
+
+    def _install_unpad_cache(self) -> None:
+        """Patch _get_unpad_data to cache per data_ptr and use CPU-known max_seqlen.
+
+        HF calls _get_unpad_data once per decoder layer (28× per forward pass)
+        with the *same* attention mask. The original does nonzero + .item() each
+        time — 28 GPU→CPU syncs. This patch computes once and returns cached
+        results for subsequent layers. max_seqlen is taken from
+        self._current_max_seqlen (set in _batched_decode from Python-known
+        valid_lens) to avoid the .item() GPU→CPU sync entirely.
+        """
+        original = _flash_utils._get_unpad_data
+        generator = self
+        _cache: dict = {}
+
+        def _cached_get_unpad_data(attention_mask: torch.Tensor):
+            key = attention_mask.data_ptr()
+            if key in _cache:
+                return _cache[key]
+            seqlens_in_batch = attention_mask.sum(dim=-1, dtype=torch.int32)
+            indices = torch.nonzero(attention_mask.flatten(), as_tuple=False).flatten()
+            max_seqlen = generator._current_max_seqlen
+            cu_seqlens = F.pad(torch.cumsum(seqlens_in_batch, dim=0, dtype=torch.int32), (1, 0))
+            result = (indices, cu_seqlens, max_seqlen)
+            _cache[key] = result
+            return result
+
+        def _clear():
+            _cache.clear()
+
+        _cached_get_unpad_data.clear_cache = _clear
+        _flash_utils._get_unpad_data = _cached_get_unpad_data
+        self._unpad_clear = _clear
+        self._original_get_unpad_data = original
 
     def _init_cache(self, max_seq_len: int, batch_size: int) -> _PreAllocatedBatchCache:
         config = self.model.config
@@ -619,19 +659,21 @@ class BatchGenerator:
 
                 step_start = time.perf_counter()
                 self._batched_decode(active_indices, active_slots)
-                if torch.cuda.is_available():
-                    torch.cuda.synchronize()
-                step_time_sum += time.perf_counter() - step_start
+                step += 1
+                chunk_step += 1
 
+                # Sync only on log boundaries to avoid per-step GPU→CPU stalls.
+                # Keeps the GPU pipeline full between syncs.
                 if step % 200 == 0:
-                    avg_step = step_time_sum / (step + 1)
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()
+                    step_time_sum += time.perf_counter() - step_start
+                    avg_step = step_time_sum / step
                     logger.info(
                         f"[perf] phase step={step} active={len(active)} "
                         f"max_active_len={max_active_len} avg_step={avg_step:.4f}s "
                         f"queue={len(slot_queue)}"
                     )
-                step += 1
-                chunk_step += 1
 
                 # Periodic safety net: abort phase if free VRAM is critically low
                 if torch.cuda.is_available() and step % self._vram_check_interval == 0:
@@ -745,32 +787,45 @@ class BatchGenerator:
         max_active_len = max(self._valid_lens[i] for i in batch_indices)
         self._cache._active_seq_len = max_active_len
 
-        # Set per-row cache positions so each slot writes KV at its own valid_len.
         bs = self._effective_batch_size
+
+        # --- Vectorised tensor construction (replaces 4 Python for-loops) ---
+        # Gather Python-side data into CPU lists, then move to GPU in one shot.
+        batch_idx_t = torch.tensor(batch_indices, device=device)
+        valid_lens_t = torch.tensor(
+            [self._valid_lens[i] for i in batch_indices], device=device
+        )
+        last_tokens_t = torch.tensor(
+            [slot.generated_ids[-1] for slot in slots], dtype=torch.long, device=device
+        )
+        seq_positions_t = torch.tensor(
+            [slot.seq_position for slot in slots], dtype=torch.long, device=device
+        )
+
+        # per_row_positions: 1 scatter instead of ~94 element writes
         per_row_positions = torch.zeros(bs, dtype=torch.long, device=device)
-        for i in batch_indices:
-            per_row_positions[i] = self._valid_lens[i]
+        per_row_positions[batch_idx_t] = valid_lens_t
         self._cache._per_row_cache_positions = per_row_positions
 
-        # Build input_ids [bs, 1]
+        # input_ids [bs, 1]: 1 scatter instead of ~94 element writes
         input_ids = torch.full((bs, 1), self.pad_token_id, dtype=torch.long, device=device)
-        for i, slot in zip(batch_indices, slots):
-            input_ids[i, 0] = slot.generated_ids[-1]
+        input_ids[batch_idx_t, 0] = last_tokens_t
 
-        # Build attention_mask [bs, max_active_len + 1]
-        attn_mask = torch.zeros(bs, max_active_len + 1, dtype=torch.long, device=device)
-        for i in batch_indices:
-            valid_len = self._valid_lens[i]
-            attn_mask[i, :valid_len] = 1  # valid cached positions
-            attn_mask[i, valid_len] = 1  # new token position
+        # attention_mask [bs, seq]: vectorised broadcast instead of ~188 element writes
+        seq_width = max_active_len + 1
+        cols = torch.arange(seq_width, device=device).unsqueeze(0)  # (1, seq)
+        attn_mask = torch.zeros(bs, seq_width, dtype=torch.long, device=device)
+        attn_mask[batch_idx_t] = (cols <= valid_lens_t.unsqueeze(1)).long()
 
         # cache_position: max_active_len for correct causal mask sizing
         cache_position = torch.tensor([max_active_len], device=device)
 
-        # position_ids [bs, 1]
+        # position_ids [bs, 1]: 1 scatter instead of ~94 element writes
         position_ids = torch.zeros(bs, 1, dtype=torch.long, device=device)
-        for i, slot in zip(batch_indices, slots):
-            position_ids[i, 0] = slot.seq_position
+        position_ids[batch_idx_t, 0] = seq_positions_t
+
+        # Tell the unpad cache the max seq length so it can skip .item() sync
+        self._current_max_seqlen = seq_width
 
         # Single forward() call — model writes new KV via per-row cache positions
         outputs = self._compiled_model(
@@ -781,6 +836,9 @@ class BatchGenerator:
             past_key_values=self._cache,
             use_cache=True,
         )
+
+        # Clear the per-forward unpad cache so next step recomputes
+        self._unpad_clear()
 
         # Sample next token per slot and advance valid_lens
         for i, slot in zip(batch_indices, slots):
