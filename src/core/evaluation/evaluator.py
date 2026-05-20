@@ -37,7 +37,7 @@ class GenerationConfig(BaseModel):
     attn_implementation: str | None = "flash_attention_2"
     # Once the cumulative RAM footprint of staged KV cache exceeds this many
     # GB, overflow slots spill to disk instead of RAM.
-    kv_cache_offload_threshold_gb: float = 100.0
+    kv_cache_offload_threshold_gb: float = 120.0
     # Parent directory for spilled KV files. None → "_kv_spill" under the
     # dataset out dir. Keep this on local NVMe — a network mount is slow.
     kv_cache_spill_dir: str | None = None
@@ -133,9 +133,7 @@ class Evaluator:
 
             cached_rows = self._load_chunk(chunk_path)
             if cached_rows is not None:
-                logger.info(
-                    f"Chunk {chunk_idx + 1}/{num_chunks}: loaded {len(cached_rows)} rows from {chunk_path}"
-                )
+                logger.info(f"Chunk {chunk_idx + 1}/{num_chunks}: loaded {len(cached_rows)} rows from {chunk_path}")
                 all_results.extend(cached_rows)
                 correct += sum(1 for r in cached_rows if r["is_correct"])
                 num_truncated += sum(1 for r in cached_rows if r["is_truncated"])
