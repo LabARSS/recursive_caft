@@ -35,6 +35,12 @@ class GenerationConfig(BaseModel):
     top_k: int = -1
     torch_compile: bool = True
     attn_implementation: str | None = "flash_attention_2"
+    # Once the cumulative RAM footprint of staged KV cache exceeds this many
+    # GB, overflow slots spill to disk instead of RAM.
+    kv_cache_offload_threshold_gb: float = 100.0
+    # Parent directory for spilled KV files. None → "_kv_spill" under the
+    # dataset out dir. Keep this on local NVMe — a network mount is slow.
+    kv_cache_spill_dir: str | None = None
 
 
 class EvaluatorConfig(PydraConfig):
@@ -142,6 +148,9 @@ class Evaluator:
                 for i, prompt in enumerate(chunk_prompts[:3]):
                     logger.info(f"Example prompt {i}: {tokenizer.decode(prompt, skip_special_tokens=False)}")
 
+            spill_parent = self.config.generation.kv_cache_spill_dir or str(
+                self._out_path_for(eval_dataset) / "_kv_spill"
+            )
             generator = BatchGenerator(
                 model=model,
                 tokenizer=tokenizer,
@@ -152,6 +161,8 @@ class Evaluator:
                 top_k=self.config.generation.top_k,
                 max_thinking_tokens=self.config.generation.max_thinking_tokens,
                 thinking_end_token_id=thinking_end_token_id,
+                kv_cache_offload_threshold_gb=self.config.generation.kv_cache_offload_threshold_gb,
+                kv_cache_spill_dir=spill_parent,
             )
 
             gen_result = generator.generate(chunk_prompts)
@@ -253,7 +264,9 @@ class Evaluator:
         if not out_dir.exists():
             return
         for entry in out_dir.iterdir():
-            if entry.is_dir() and entry.name.startswith("_chunks_"):
+            # _kv_spill holds per-chunk KV spill subdirs (each store removes its
+            # own; the empty parent is swept here).
+            if entry.is_dir() and (entry.name.startswith("_chunks_") or entry.name == "_kv_spill"):
                 shutil.rmtree(entry, ignore_errors=True)
 
     def _load_cached_result(self, eval_dataset: QADatasetAdapter) -> EvaluationResult | None:

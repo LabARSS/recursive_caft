@@ -280,6 +280,60 @@ class TestCorrectnessVsHFGenerate:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Disk-offload tests
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestDiskOffload:
+    """KV cache disk offload must be byte-identical and clean up after itself."""
+
+    def test_forced_disk_offload_matches_hf(self, model_and_tokenizer, tmp_path):
+        """threshold_gb=0 spills every slot to disk; output must still match HF."""
+        model, tokenizer = model_and_tokenizer
+        prompts = [
+            tokenizer.encode("Hello world"),
+            tokenizer.encode("The quick brown fox jumps over the lazy dog and then"),
+            tokenizer.encode("Once"),
+            tokenizer.encode("A long time ago in a galaxy far far away"),
+        ]
+
+        gen = BatchGenerator(
+            model=model,
+            tokenizer=tokenizer,
+            max_new_tokens=MAX_NEW_TOKENS,
+            max_batch_size=2,  # forces queuing + phase transitions across disk slots
+            kv_cache_offload_threshold_gb=0.0,  # every staged slot spills to disk
+            kv_cache_spill_dir=str(tmp_path),
+        )
+        results = gen.generate(prompts).sequences
+
+        for i, (prompt, result) in enumerate(zip(prompts, results)):
+            expected = _hf_generate_greedy(model, tokenizer, prompt, MAX_NEW_TOKENS)
+            assert result == expected, (
+                f"Prompt {i} mismatch with disk-offloaded KV:\n"
+                f"  got:      {result}\n  expected: {expected}"
+            )
+
+    def test_spill_dir_removed_after_generate(self, model_and_tokenizer, tmp_path):
+        """The store's spill subdir must be gone once generate() returns."""
+        model, tokenizer = model_and_tokenizer
+        prompt = tokenizer.encode("Hello world")
+
+        gen = BatchGenerator(
+            model=model,
+            tokenizer=tokenizer,
+            max_new_tokens=MAX_NEW_TOKENS,
+            max_batch_size=1,
+            kv_cache_offload_threshold_gb=0.0,
+            kv_cache_spill_dir=str(tmp_path),
+        )
+        gen.generate([prompt])
+
+        leftover = [p for p in tmp_path.iterdir() if p.name.startswith("kv_spill_")]
+        assert leftover == [], f"Spill subdir(s) not cleaned up: {leftover}"
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Thinking-cap tests
 # ──────────────────────────────────────────────────────────────────────
 

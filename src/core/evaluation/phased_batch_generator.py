@@ -1,4 +1,7 @@
 import gc
+import os
+import shutil
+import tempfile
 import time
 import types
 from collections import deque
@@ -8,11 +11,10 @@ from typing import Optional
 import psutil
 import torch
 import torch.nn.functional as F
+import transformers.modeling_flash_attention_utils as _flash_utils
 from tqdm import tqdm
 from transformers import DynamicCache, PreTrainedModel, PreTrainedTokenizer
 from transformers.cache_utils import _static_cache_update
-
-import transformers.modeling_flash_attention_utils as _flash_utils
 
 from core.utils.logger import logger
 
@@ -59,13 +61,118 @@ class _Slot:
 
 @dataclass
 class _StagedSlot:
-    """Slot with KV cache staged on CPU."""
+    """Slot with KV cache staged off the GPU.
+
+    Either RAM-resident (key_cache/value_cache set, spill_path None) or
+    disk-resident (spill_path set, key_cache/value_cache None). Created and
+    consumed exclusively through _StagedKVStore.
+    """
 
     slot: _Slot
     valid_len: int
-    # Per-layer CPU tensors: shape [1, num_kv_heads, valid_len, head_dim]
-    key_cache: list[torch.Tensor]
-    value_cache: list[torch.Tensor]
+    nbytes: int  # total CPU bytes of this slot's K+V tensors
+    # Per-layer CPU tensors: shape [1, num_kv_heads, valid_len, head_dim].
+    # None when the slot has been spilled to disk.
+    key_cache: list[torch.Tensor] | None = None
+    value_cache: list[torch.Tensor] | None = None
+    # Path of the on-disk file when spilled; None when RAM-resident.
+    spill_path: str | None = None
+
+    @property
+    def on_disk(self) -> bool:
+        return self.spill_path is not None
+
+
+class _StagedKVStore:
+    """Owns CPU-staged KV slots for one generate() call, with disk spill.
+
+    Tracks the cumulative RAM footprint of staged KV. When staging a slot would
+    push the footprint over `threshold_bytes`, that slot's KV is written to one
+    file on disk instead of RAM (watermark spill: RAM-resident slots are never
+    evicted). Restore reads the slot back — from RAM or disk — and deletes the
+    file for disk slots.
+
+    Disk format: the per-layer K and V tensors are each stacked into one
+    contiguous tensor and saved together via torch.save — one file per slot,
+    avoiding per-layer pickle overhead and many small writes.
+    """
+
+    def __init__(self, threshold_bytes: int, spill_parent_dir: str | None) -> None:
+        self.threshold_bytes = threshold_bytes
+        if spill_parent_dir is not None:
+            os.makedirs(spill_parent_dir, exist_ok=True)
+        # Fresh unique subdir; the store fully owns and removes it on close().
+        self.spill_dir = tempfile.mkdtemp(prefix="kv_spill_", dir=spill_parent_dir)
+        self._ram_bytes = 0
+        self._spill_seq = 0
+        self._spilled_count = 0
+        self._spilled_bytes = 0
+        logger.info(f"[kv-store] init threshold={threshold_bytes / 1e9:.1f}GB spill_dir={self.spill_dir}")
+
+    @staticmethod
+    def _kv_nbytes(keys: list[torch.Tensor], vals: list[torch.Tensor]) -> int:
+        """Total CPU bytes of a slot's per-layer K and V tensors."""
+        return sum(t.numel() * t.element_size() for t in keys) + sum(t.numel() * t.element_size() for t in vals)
+
+    def stage(
+        self,
+        slot: _Slot,
+        valid_len: int,
+        keys: list[torch.Tensor],
+        vals: list[torch.Tensor],
+    ) -> _StagedSlot:
+        """Build a _StagedSlot, spilling to disk if the RAM threshold is exceeded.
+
+        Watermark policy: if adding this slot would exceed the threshold, this
+        slot goes to disk; slots already in RAM are left untouched.
+        """
+        nbytes = self._kv_nbytes(keys, vals)
+        if self._ram_bytes + nbytes > self.threshold_bytes:
+            path = self._spill_to_disk(keys, vals)
+            self._spilled_count += 1
+            self._spilled_bytes += nbytes
+            logger.trace(
+                f"[kv-store] spill slot={slot.index} valid_len={valid_len} "
+                f"nbytes={nbytes / 1e9:.3f}GB ram={self._ram_bytes / 1e9:.2f}GB"
+            )
+            return _StagedSlot(slot=slot, valid_len=valid_len, nbytes=nbytes, spill_path=path)
+        self._ram_bytes += nbytes
+        return _StagedSlot(slot=slot, valid_len=valid_len, nbytes=nbytes, key_cache=keys, value_cache=vals)
+
+    def restore(self, staged: _StagedSlot) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+        """Return (keys, vals) CPU tensors; read+delete the file for disk slots."""
+        if staged.spill_path is not None:
+            keys, vals = self._read_from_disk(staged.spill_path)
+            os.remove(staged.spill_path)
+            return keys, vals
+        self._ram_bytes -= staged.nbytes
+        keys, vals = staged.key_cache, staged.value_cache
+        staged.key_cache = staged.value_cache = None
+        return keys, vals
+
+    def _spill_to_disk(self, keys: list[torch.Tensor], vals: list[torch.Tensor]) -> str:
+        """Stack per-layer tensors and write one file. Returns the path."""
+        # torch.stack on a new dim 0 -> contiguous [num_layers, 1, kv_heads, valid_len, head_dim].
+        k_stacked = torch.stack(keys, dim=0)
+        v_stacked = torch.stack(vals, dim=0)
+        path = os.path.join(self.spill_dir, f"kv_{self._spill_seq:08d}.pt")
+        self._spill_seq += 1
+        torch.save({"k": k_stacked, "v": v_stacked}, path)
+        return path
+
+    @staticmethod
+    def _read_from_disk(path: str) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
+        """Load a spilled file and unstack back into per-layer lists."""
+        payload = torch.load(path, map_location="cpu", weights_only=True)
+        k, v = payload["k"], payload["v"]
+        return [k[i] for i in range(k.shape[0])], [v[i] for i in range(v.shape[0])]
+
+    def close(self) -> None:
+        """Delete the spill directory. Safe to call multiple times."""
+        logger.info(
+            f"[kv-store] close spilled_slots={self._spilled_count} spilled_bytes={self._spilled_bytes / 1e9:.2f}GB"
+        )
+        shutil.rmtree(self.spill_dir, ignore_errors=True)
 
 
 class _PrefillCacheView(DynamicCache):
@@ -203,6 +310,8 @@ class BatchGenerator:
         top_k: int = -1,
         max_thinking_tokens: int | None = None,
         thinking_end_token_id: int | None = None,
+        kv_cache_offload_threshold_gb: float = 120.0,
+        kv_cache_spill_dir: str | None = None,
     ):
         self.model = model
         # Use uncompiled model for prefill, compiled for decode — mirrors HF generate().
@@ -220,6 +329,8 @@ class BatchGenerator:
         self.top_k = top_k
         self.max_thinking_tokens = max_thinking_tokens
         self.thinking_end_token_id = thinking_end_token_id
+        self._kv_offload_threshold_bytes = int(kv_cache_offload_threshold_gb * 1e9)
+        self._kv_spill_dir = kv_cache_spill_dir
         self._enforce_thinking_cap = max_thinking_tokens is not None and thinking_end_token_id is not None
         if (max_thinking_tokens is None) != (thinking_end_token_id is None):
             logger.warning(
@@ -469,99 +580,108 @@ class BatchGenerator:
         prefill_cache = self._init_cache(max_prompt_len + 1, 1)
         slot_queue: deque[_StagedSlot] = deque()
 
-        prefill_start = time.perf_counter()
-        total_prefill_tokens = 0
-        for i, prompt_ids in enumerate(tqdm(prompts, desc="Prefilling", leave=False)):
-            slot = _Slot(
-                index=i,
-                prompt_ids=prompt_ids,
-                prompt_len=len(prompt_ids),
-                in_thinking=self._enforce_thinking_cap,
-            )
-            self._cache = prefill_cache
-            self._valid_lens = [0]
-            self._prefill(slot, prompt_ids, 0)
-            total_prefill_tokens += len(prompt_ids)
+        # Owns the CPU-staged KV for this call and spills overflow to disk once
+        # the staged footprint crosses the threshold. Torn down in finally.
+        kv_store = _StagedKVStore(self._kv_offload_threshold_bytes, self._kv_spill_dir)
+        try:
+            prefill_start = time.perf_counter()
+            total_prefill_tokens = 0
+            for i, prompt_ids in enumerate(tqdm(prompts, desc="Prefilling", leave=False)):
+                slot = _Slot(
+                    index=i,
+                    prompt_ids=prompt_ids,
+                    prompt_len=len(prompt_ids),
+                    in_thinking=self._enforce_thinking_cap,
+                )
+                self._cache = prefill_cache
+                self._valid_lens = [0]
+                self._prefill(slot, prompt_ids, 0)
+                total_prefill_tokens += len(prompt_ids)
 
-            # Stage KV to CPU
-            valid_len = self._valid_lens[0]
-            keys, vals = prefill_cache.stage_row_to_cpu(0, valid_len)
-            slot_queue.append(_StagedSlot(slot=slot, valid_len=valid_len, key_cache=keys, value_cache=vals))
+                # Stage KV off the GPU (RAM, or disk once over threshold)
+                valid_len = self._valid_lens[0]
+                keys, vals = prefill_cache.stage_row_to_cpu(0, valid_len)
+                slot_queue.append(kv_store.stage(slot, valid_len, keys, vals))
 
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        prefill_time = time.perf_counter() - prefill_start
-        logger.info(
-            f"[perf] Prefill: {len(prompts)} prompts, {total_prefill_tokens} tokens, "
-            f"{prefill_time:.4f}s ({total_prefill_tokens / prefill_time:.0f} tok/s)"
-        )
-
-        # Free prefill cache
-        self._cache = None
-        prefill_cache = None
-        self._measure_usable_vram()
-
-        # --- Phase loop ---
-        logger.info(
-            f"[phase] Starting generation: {len(slot_queue)} prompts, "
-            f"phase_step={self._PHASE_STEP} max={self.max_new_tokens}"
-        )
-
-        trunc = 0
-        phase = 0
-        total_threshold = min(self._PHASE_STEP, max_total)
-
-        while True:
-            promote_queue: deque[_StagedSlot] = deque()
-
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            prefill_time = time.perf_counter() - prefill_start
             logger.info(
-                f"[phase] Starting phase {phase + 1}: {len(slot_queue)} sequences, total_threshold={total_threshold}"
-            )
-            logger.trace(
-                f"[trace] phase_start phase={phase + 1} staged={len(slot_queue)} "
-                f"total_threshold={total_threshold} {_mem_snapshot(staged_slots=len(slot_queue))}"
+                f"[perf] Prefill: {len(prompts)} prompts, {total_prefill_tokens} tokens, "
+                f"{prefill_time:.4f}s ({total_prefill_tokens / prefill_time:.0f} tok/s)"
             )
 
-            is_last = total_threshold >= max_total
-            trunc += self._run_phase(
-                slot_queue,
-                results,
-                truncated_flags,
-                thinking_exhausted_flags,
-                total_threshold,
-                promote_queue,
-                pbar,
-                total_threshold + 1,
-                is_last,
-            )
-
+            # Free prefill cache
             self._cache = None
-            logger.trace(
-                f"[trace] phase_end phase={phase + 1} promoted={len(promote_queue)} "
-                f"{_mem_snapshot(staged_slots=len(promote_queue))}"
+            prefill_cache = None
+            self._measure_usable_vram()
+
+            # --- Phase loop ---
+            logger.info(
+                f"[phase] Starting generation: {len(slot_queue)} prompts, "
+                f"phase_step={self._PHASE_STEP} max={self.max_new_tokens}"
             )
 
-            if not promote_queue:
-                break
+            trunc = 0
+            phase = 0
+            total_threshold = min(self._PHASE_STEP, max_total)
 
-            slot_queue = promote_queue
-            phase += 1
-            total_threshold = min(self._PHASE_STEP * (phase + 1), max_total)
-            logger.info(f"[phase] Phase {phase}: {len(slot_queue)} sequences promoted")
+            while True:
+                promote_queue: deque[_StagedSlot] = deque()
 
-        pbar.close()
-        sequences = [r if r is not None else [] for r in results]
-        return GenerationResult(
-            sequences=sequences,
-            num_truncated=trunc,
-            total=len(prompts),
-            truncated=truncated_flags,
-            thinking_budget_exhausted=thinking_exhausted_flags,
-        )
+                logger.info(
+                    f"[phase] Starting phase {phase + 1}: {len(slot_queue)} sequences, "
+                    f"total_threshold={total_threshold}"
+                )
+                logger.trace(
+                    f"[trace] phase_start phase={phase + 1} staged={len(slot_queue)} "
+                    f"total_threshold={total_threshold} {_mem_snapshot(staged_slots=len(slot_queue))}"
+                )
+
+                is_last = total_threshold >= max_total
+                trunc += self._run_phase(
+                    slot_queue,
+                    kv_store,
+                    results,
+                    truncated_flags,
+                    thinking_exhausted_flags,
+                    total_threshold,
+                    promote_queue,
+                    pbar,
+                    total_threshold + 1,
+                    is_last,
+                )
+
+                self._cache = None
+                logger.trace(
+                    f"[trace] phase_end phase={phase + 1} promoted={len(promote_queue)} "
+                    f"{_mem_snapshot(staged_slots=len(promote_queue))}"
+                )
+
+                if not promote_queue:
+                    break
+
+                slot_queue = promote_queue
+                phase += 1
+                total_threshold = min(self._PHASE_STEP * (phase + 1), max_total)
+                logger.info(f"[phase] Phase {phase}: {len(slot_queue)} sequences promoted")
+
+            pbar.close()
+            sequences = [r if r is not None else [] for r in results]
+            return GenerationResult(
+                sequences=sequences,
+                num_truncated=trunc,
+                total=len(prompts),
+                truncated=truncated_flags,
+                thinking_budget_exhausted=thinking_exhausted_flags,
+            )
+        finally:
+            kv_store.close()
 
     def _run_phase(
         self,
         slot_queue: deque[_StagedSlot],
+        kv_store: _StagedKVStore,
         results: list[list[int] | None],
         truncated_flags: list[bool],
         thinking_exhausted_flags: list[bool],
@@ -573,9 +693,9 @@ class BatchGenerator:
     ) -> int:
         """Run a complete phase with static batching.
 
-        Pops staged slots from slot_queue, restores KV from CPU → GPU,
-        decodes until done or budget exhausted, stages promoted slots back
-        to CPU.
+        Pops staged slots from slot_queue, restores KV (RAM or disk) → GPU,
+        decodes until done or budget exhausted, re-stages promoted slots
+        through kv_store.
 
         Returns the number of truncated sequences.
         """
@@ -626,7 +746,8 @@ class BatchGenerator:
 
                 staged = slot_queue.popleft()
                 batch_idx = len(chunk_slots)
-                self._cache.restore_row_from_cpu(batch_idx, staged.valid_len, staged.key_cache, staged.value_cache)
+                keys, vals = kv_store.restore(staged)
+                self._cache.restore_row_from_cpu(batch_idx, staged.valid_len, keys, vals)
                 self._valid_lens[batch_idx] = staged.valid_len
                 chunk_slots.append(staged.slot)
             if torch.cuda.is_available():
@@ -683,19 +804,12 @@ class BatchGenerator:
                             f"[vram] Free VRAM critically low at step {step}. Aborting phase. "
                             f"Reducing batch size for next attempt: {effective_bs} -> {self._vram_reduced_bs}."
                         )
-                        # Stage active slots back to CPU and re-queue
+                        # Stage active slots back off the GPU and re-queue
                         for i, slot in enumerate(chunk_slots):
                             if i not in finished:
                                 valid_len = self._valid_lens[i]
                                 keys, vals = self._cache.stage_row_to_cpu(i, valid_len)
-                                promote_queue.appendleft(
-                                    _StagedSlot(
-                                        slot=slot,
-                                        valid_len=valid_len,
-                                        key_cache=keys,
-                                        value_cache=vals,
-                                    )
-                                )
+                                promote_queue.appendleft(kv_store.stage(slot, valid_len, keys, vals))
                         while slot_queue:
                             promote_queue.append(slot_queue.popleft())
                         break
@@ -712,20 +826,13 @@ class BatchGenerator:
                         finished.add(batch_idx)
                         pbar.update(1)
 
-                # Batch-level promotion: budget exhausted → stage all remaining to CPU
+                # Batch-level promotion: budget exhausted → stage all remaining off the GPU
                 if chunk_step >= phase_budget:
                     for batch_idx, slot in enumerate(chunk_slots):
                         if batch_idx not in finished:
                             valid_len = self._valid_lens[batch_idx]
                             keys, vals = self._cache.stage_row_to_cpu(batch_idx, valid_len)
-                            promote_queue.append(
-                                _StagedSlot(
-                                    slot=slot,
-                                    valid_len=valid_len,
-                                    key_cache=keys,
-                                    value_cache=vals,
-                                )
-                            )
+                            promote_queue.append(kv_store.stage(slot, valid_len, keys, vals))
                             finished.add(batch_idx)
                     break
 
@@ -792,15 +899,9 @@ class BatchGenerator:
         # --- Vectorised tensor construction (replaces 4 Python for-loops) ---
         # Gather Python-side data into CPU lists, then move to GPU in one shot.
         batch_idx_t = torch.tensor(batch_indices, device=device)
-        valid_lens_t = torch.tensor(
-            [self._valid_lens[i] for i in batch_indices], device=device
-        )
-        last_tokens_t = torch.tensor(
-            [slot.generated_ids[-1] for slot in slots], dtype=torch.long, device=device
-        )
-        seq_positions_t = torch.tensor(
-            [slot.seq_position for slot in slots], dtype=torch.long, device=device
-        )
+        valid_lens_t = torch.tensor([self._valid_lens[i] for i in batch_indices], device=device)
+        last_tokens_t = torch.tensor([slot.generated_ids[-1] for slot in slots], dtype=torch.long, device=device)
+        seq_positions_t = torch.tensor([slot.seq_position for slot in slots], dtype=torch.long, device=device)
 
         # per_row_positions: 1 scatter instead of ~94 element writes
         per_row_positions = torch.zeros(bs, dtype=torch.long, device=device)
