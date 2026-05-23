@@ -15,7 +15,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenize
 import core.utils.runtime_trace  # noqa: F401  # install faulthandler/excepthook/signal handlers
 from core.datasets.qa_dataset import QADataset
 from core.datasets.qa_dataset_adapter import QADatasetAdapter
-from core.evaluation.phased_batch_generator import BatchGenerator
+from core.evaluation.phased_batch_generator import BatchGenerator, _malloc_trim
 from core.utils.device import DEVICE_MAP
 from core.utils.logger import logger
 
@@ -201,6 +201,11 @@ class Evaluator:
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+            # gc.collect() drops Python refs; the chunks then sit in glibc's
+            # per-arena freelists and never return to the OS. The .cpu() in
+            # stage_row_to_cpu produces 2*num_layers small allocs per slot, so
+            # arenas fragment heavily over a run.
+            _malloc_trim()
 
         if num_truncated > 0:
             pct = num_truncated / total * 100

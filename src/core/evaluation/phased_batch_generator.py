@@ -19,6 +19,19 @@ from transformers.cache_utils import _static_cache_update
 from core.utils.logger import logger
 
 
+def _malloc_trim() -> None:
+    """Ask glibc to release free arena pages back to the OS.
+
+    No-op on non-glibc platforms (macOS, Alpine/musl). Linux-only.
+    """
+    try:
+        import ctypes
+
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
+
+
 def _mem_snapshot(staged_slots: int | None = None) -> str:
     rss_gb = psutil.Process().memory_info().rss / 1e9
     parts = [f"rss={rss_gb:.2f}GB"]
@@ -121,19 +134,24 @@ class _StagedKVStore:
         keys: list[torch.Tensor],
         vals: list[torch.Tensor],
     ) -> _StagedSlot:
-        """Build a _StagedSlot, spilling to disk if the RAM threshold is exceeded.
+        """Build a _StagedSlot, spilling to disk if process RSS would exceed the threshold.
 
-        Watermark policy: if adding this slot would exceed the threshold, this
-        slot goes to disk; slots already in RAM are left untouched.
+        Watermark policy: if adding this slot would push process RSS over the
+        threshold, this slot goes to disk; slots already in RAM are left
+        untouched. RSS (not just our KV bytes) is the right signal — torch.compile
+        caches, glibc fragmentation, and pinned host buffers all count toward
+        the OOM-killer's view of the process.
         """
         nbytes = self._kv_nbytes(keys, vals)
-        if self._ram_bytes + nbytes > self.threshold_bytes:
+        rss = psutil.Process().memory_info().rss
+        if rss + nbytes > self.threshold_bytes:
             path = self._spill_to_disk(keys, vals)
             self._spilled_count += 1
             self._spilled_bytes += nbytes
             logger.trace(
                 f"[kv-store] spill slot={slot.index} valid_len={valid_len} "
-                f"nbytes={nbytes / 1e9:.3f}GB ram={self._ram_bytes / 1e9:.2f}GB"
+                f"nbytes={nbytes / 1e9:.3f}GB rss={rss / 1e9:.2f}GB "
+                f"ram_kv={self._ram_bytes / 1e9:.2f}GB"
             )
             return _StagedSlot(slot=slot, valid_len=valid_len, nbytes=nbytes, spill_path=path)
         self._ram_bytes += nbytes
@@ -173,6 +191,7 @@ class _StagedKVStore:
             f"[kv-store] close spilled_slots={self._spilled_count} spilled_bytes={self._spilled_bytes / 1e9:.2f}GB"
         )
         shutil.rmtree(self.spill_dir, ignore_errors=True)
+        _malloc_trim()
 
 
 class _PrefillCacheView(DynamicCache):
