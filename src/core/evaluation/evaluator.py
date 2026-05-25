@@ -83,10 +83,20 @@ class Evaluator:
             else:
                 logger.info("Compiling model with torch.compile... First forward call will be slow.")
                 torch.set_float32_matmul_precision("high")
-                torch._dynamo.config.cache_size_limit = 128
+                torch._dynamo.config.cache_size_limit = 2048
                 torch._dynamo.config.suppress_errors = False
                 torch._dynamo.config.verbose = False
-                logger.info(f"[trace] torch.compile config: cache_size_limit={torch._dynamo.config.cache_size_limit} ")
+                # Default inductor worker pool is min(32, cpu_count). Each worker is a
+                # forked Python with torch loaded; under COW divergence the pool can
+                # consume tens of GB. Cap to 4 — recompiles here are infrequent and
+                # the parallelism wasn't buying much.
+                import torch._inductor.config as _inductor_config
+
+                _inductor_config.compile_threads = 4
+                logger.info(
+                    f"[trace] torch.compile config: cache_size_limit={torch._dynamo.config.cache_size_limit} "
+                    f"compile_threads={_inductor_config.compile_threads}"
+                )
                 model = torch.compile(model)
 
         results: list[EvaluationResult] = []
@@ -206,6 +216,12 @@ class Evaluator:
             # stage_row_to_cpu produces 2*num_layers small allocs per slot, so
             # arenas fragment heavily over a run.
             _malloc_trim()
+            # Wipe the dynamo compile cache between chunks. Cached entries from
+            # earlier chunks see different (bs, seq_width, max_cache_len) tuples
+            # and count toward cache_size_limit without serving the next chunk.
+            # Without this, by ~chunk 7 the cache thrashes and decode collapses
+            # into a recompile-evict-recompile loop.
+            torch._dynamo.reset()
 
         if num_truncated > 0:
             pct = num_truncated / total * 100
