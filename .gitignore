@@ -3,7 +3,17 @@
 *.pyc
 __pycache__
 .env
-artifacts
 .vscode
 *.tmp
 *.tmp.parquet
+
+# 1. ignore everything *inside* artifacts  (NOTE: /** , not bare 'artifacts')
+artifacts/**
+# 2. but let Git descend into every subdirectory (trailing slash = dirs only)
+!artifacts/**/
+# 3. re-include the eval files at any depth under any evals/ dir
+!artifacts/**/evals/**/responses.parquet
+!artifacts/**/evals/**/results.json
+!artifacts/**/summary_reasoning_evals.json
+!artifacts/**/summary_cot.json
+!artifacts/**/summary_single_token.json

@@ -1,0 +1,7 @@
+{
+  "accuracy": 0.4014962593516209,
+  "total": 401,
+  "correct": 161,
+  "num_truncated": 401,
+  "model_path": "/src/recursive_caft/src/experiments/sft_by_complexity_splits/mmlu/../../../../artifacts/sft_by_complexity_splits/mmlu/phi4mini/group4/checkpoint-78"
+}
