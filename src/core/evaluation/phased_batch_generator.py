@@ -947,6 +947,16 @@ class BatchGenerator:
         # Tell the unpad cache the max seq length so it can skip .item() sync
         self._current_max_seqlen = seq_width
 
+        # Without these hints, every distinct (bs, seq_width) combination
+        # triggers a fresh inductor compile. Across phases and chunks that
+        # is thousands of compiles — the worker pool eventually deadlocks
+        # (subproc_pool._recv_msg stuck) and the cgroup OOMKills.
+        torch._dynamo.mark_dynamic(input_ids, 0)
+        torch._dynamo.mark_dynamic(attn_mask, 0)
+        torch._dynamo.mark_dynamic(attn_mask, 1)
+        torch._dynamo.mark_dynamic(position_ids, 0)
+        torch._dynamo.mark_dynamic(cache_position, 0)
+
         # Single forward() call — model writes new KV via per-row cache positions
         outputs = self._compiled_model(
             input_ids=input_ids,
