@@ -81,6 +81,21 @@ class Evaluator:
             if not torch.cuda.is_available():
                 logger.warning("torch_compile=True but CUDA not available — skipping compilation.")
             else:
+                # Inductor's default cache lives at /tmp/torchinductor_<user>. In
+                # Docker, /tmp is usually tmpfs (RAM-backed) with a small size cap
+                # set at container start — a few GB at most. After several
+                # compile-heavy runs the cache fills the tmpfs and the next write
+                # fails with `OSError: [Errno 28] No space left on device`.
+                # Redirect to artifacts/_inductor_cache under the repo so the
+                # cache lives next to other run outputs and is trivial to inspect
+                # or wipe. Skipped if the user already set TORCHINDUCTOR_CACHE_DIR.
+                if "TORCHINDUCTOR_CACHE_DIR" not in os.environ:
+                    _repo_root = Path(__file__).resolve().parents[3]
+                    _cache_dir = str(_repo_root / "artifacts" / "_inductor_cache")
+                    os.makedirs(_cache_dir, exist_ok=True)
+                    os.environ["TORCHINDUCTOR_CACHE_DIR"] = _cache_dir
+                    logger.info(f"[trace] TORCHINDUCTOR_CACHE_DIR={_cache_dir}")
+
                 logger.info("Compiling model with torch.compile... First forward call will be slow.")
                 torch.set_float32_matmul_precision("high")
                 torch._dynamo.config.cache_size_limit = 2048
