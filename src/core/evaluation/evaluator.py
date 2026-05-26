@@ -23,7 +23,7 @@ from core.utils.logger import logger
 # cache on CPU RAM. For 12k+ MMLU-Pro prompts on a 200k-vocab model like
 # Phi-4-mini that's ~200GB of staged KV and the container gets OOM-killed.
 # Chunking the prompt list bounds peak CPU RAM to one chunk's staging queue.
-CHUNK_SIZE = 256
+CHUNK_SIZE = 1024
 
 
 class GenerationConfig(BaseModel):
@@ -37,7 +37,7 @@ class GenerationConfig(BaseModel):
     attn_implementation: str | None = "flash_attention_2"
     # Once the cumulative RAM footprint of staged KV cache exceeds this many
     # GB, overflow slots spill to disk instead of RAM.
-    kv_cache_offload_threshold_gb: float = 120.0
+    kv_cache_offload_threshold_gb: float = 160.0
     # Parent directory for spilled KV files. None → "_kv_spill" under the
     # dataset out dir. Keep this on local NVMe — a network mount is slow.
     kv_cache_spill_dir: str | None = None

@@ -3,9 +3,9 @@
     {
       "epoch": 1.0,
       "checkpoint": "checkpoint-151",
-      "accuracy": 0.43474646716541976,
+      "accuracy": 0.44305901911886947,
       "total": 2406,
-      "correct": 1046,
+      "correct": 1066,
       "num_truncated": 0
     },
     {
