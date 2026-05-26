@@ -485,49 +485,15 @@ class BatchGenerator:
         return num_layers * per_layer
 
     @staticmethod
-    def _hysteresis_band(current: int) -> int:
-        """Minimum delta to accept as a non-trivial bs change."""
-        return max(2, round(current * 0.25))
-
-    @staticmethod
     def _snap_to_even(bs: int) -> int:
         """Round bs down to the nearest even number, but never below 1.
 
-        Halves the set of distinct bs values seen by torch.compile (only evens
-        plus 1), so the compile cache stays small over long runs. Worst-case
-        throughput loss is one slot.
+        Warp-aligned bs keeps decode kernels happy with no real throughput cost
+        (worst case: one slot dropped).
         """
         if bs <= 1:
             return 1
         return bs - (bs % 2)
-
-    def _apply_bs_hysteresis(self, candidate: int, queue_len: int, max_cache_len: int) -> int:
-        """Round `candidate` to `self._effective_batch_size` when the change is trivial.
-
-        Bypasses the band for:
-          - OOM-driven caps (_vram_reduced_bs is set): honour the cap immediately.
-          - Trailing single-slot phases: drop straight to 1 — keeping a wide cache
-            for one slot wastes VRAM and isn't worth the compile reuse.
-        Upward changes must clear the same band as downward ones to prevent churn.
-        A higher `current` is only honoured if its cache still fits in usable VRAM.
-        """
-        candidate = self._snap_to_even(candidate)
-        current = self._effective_batch_size
-        if candidate == current:
-            return candidate
-        if self._vram_reduced_bs is not None and candidate <= self._vram_reduced_bs:
-            return candidate
-        if queue_len == 1 and candidate == 1:
-            return candidate
-
-        band = self._hysteresis_band(current)
-        if abs(candidate - current) >= band:
-            return candidate
-
-        if current > candidate and self._usable_vram is not None:
-            if self._estimate_cache_bytes(max_cache_len, current) > self._usable_vram:
-                return candidate
-        return current
 
     def _fit_batch_size_to_vram(self, max_cache_len: int, batch_size: int) -> int:
         """Reduce batch_size until the estimated KV cache fits in usable VRAM.
@@ -726,15 +692,14 @@ class BatchGenerator:
         # Pre-allocation VRAM check: reduce batch size until cache fits (pure math)
         effective_bs = self._fit_batch_size_to_vram(max_cache_len, effective_bs)
 
-        # Hysteresis: avoid trivial bs changes that trigger torch.compile re-trace.
-        # OOM-driven reductions (_vram_reduced_bs) and the trailing single-slot case
-        # bypass the band — the rest must clear a 25% delta (floor 2).
-        effective_bs = self._apply_bs_hysteresis(effective_bs, len(slot_queue), max_cache_len)
+        # Track the slot count directly. mark_dynamic on bs made phase-to-phase
+        # bs changes free, so the prior hysteresis policy (suppress changes <25%)
+        # only served to waste compute on padding rows. Just snap to even for
+        # warp-aligned kernels.
+        effective_bs = self._snap_to_even(effective_bs)
 
         if effective_bs != self._effective_batch_size:
-            logger.info(
-                f"[perf] Adjusting batch size: {self._effective_batch_size} → {effective_bs}. torch.compile will take time."
-            )
+            logger.info(f"[perf] Adjusting batch size: {self._effective_batch_size} → {effective_bs}.")
             self._effective_batch_size = effective_bs
 
             gc.collect()
