@@ -26,7 +26,7 @@ from core.utils.logger import logger
 # Chunking the prompt list bounds peak CPU RAM to one chunk's staging queue.
 
 # A bit more than quarter of MMLU test
-CHUNK_SIZE = 1280
+CHUNK_SIZE = 640
 
 
 class GenerationConfig(BaseModel):
@@ -255,10 +255,7 @@ class Evaluator:
                             cache_bytes += os.path.getsize(os.path.join(root, f))
                         except OSError:
                             pass
-            logger.info(
-                f"[mem] post-chunk baseline: rss={rss_gb:.2f}GB "
-                f"inductor_cache={cache_bytes / 1e9:.2f}GB"
-            )
+            logger.info(f"[mem] post-chunk baseline: rss={rss_gb:.2f}GB inductor_cache={cache_bytes / 1e9:.2f}GB")
 
         if num_truncated > 0:
             pct = num_truncated / total * 100
