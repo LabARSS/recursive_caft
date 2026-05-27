@@ -657,6 +657,10 @@ class BatchGenerator:
                 )
 
                 self._cache = None
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                _malloc_trim()
                 logger.trace(
                     f"[trace] phase_end phase={phase + 1} promoted={len(promote_queue)} "
                     f"{_mem_snapshot(staged_slots=len(promote_queue))}"
@@ -724,6 +728,7 @@ class BatchGenerator:
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+            _malloc_trim()
 
         logger.info(f"[phase] Effective batch size: {self._effective_batch_size}")
 
