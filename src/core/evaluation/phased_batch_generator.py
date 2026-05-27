@@ -557,7 +557,7 @@ class BatchGenerator:
         free, total = torch.cuda.mem_get_info()
         self._usable_vram = free - int(total * self._vram_safe_margin)
 
-    _PHASE_STEP = 1024  # max tokens generated per phase
+    _PHASE_STEP = 512  # max tokens generated per phase
 
     @torch.no_grad()
     def generate(self, prompts: list[list[int]]) -> GenerationResult:
