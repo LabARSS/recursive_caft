@@ -24,8 +24,8 @@ from core.utils.logger import logger
 # Phi-4-mini that's ~200GB of staged KV and the container gets OOM-killed.
 # Chunking the prompt list bounds peak CPU RAM to one chunk's staging queue.
 
-# A bit more than half of MMLU test
-CHUNK_SIZE = 1280
+# A bit more than quarter of MMLU test
+CHUNK_SIZE = 640
 
 
 class GenerationConfig(BaseModel):
