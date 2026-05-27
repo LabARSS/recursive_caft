@@ -134,24 +134,15 @@ class _StagedKVStore:
         keys: list[torch.Tensor],
         vals: list[torch.Tensor],
     ) -> _StagedSlot:
-        """Build a _StagedSlot, spilling to disk if process RSS would exceed the threshold.
-
-        Watermark policy: if adding this slot would push process RSS over the
-        threshold, this slot goes to disk; slots already in RAM are left
-        untouched. RSS (not just our KV bytes) is the right signal — torch.compile
-        caches, glibc fragmentation, and pinned host buffers all count toward
-        the OOM-killer's view of the process.
-        """
+        """Build a _StagedSlot, spilling to disk when tracked KV bytes would exceed the cap."""
         nbytes = self._kv_nbytes(keys, vals)
-        rss = psutil.Process().memory_info().rss
-        if rss + nbytes > self.threshold_bytes:
+        if self._ram_bytes + nbytes > self.threshold_bytes:
             path = self._spill_to_disk(keys, vals)
             self._spilled_count += 1
             self._spilled_bytes += nbytes
             logger.trace(
                 f"[kv-store] spill slot={slot.index} valid_len={valid_len} "
-                f"nbytes={nbytes / 1e9:.3f}GB rss={rss / 1e9:.2f}GB "
-                f"ram_kv={self._ram_bytes / 1e9:.2f}GB"
+                f"nbytes={nbytes / 1e9:.3f}GB ram_kv={self._ram_bytes / 1e9:.2f}GB"
             )
             return _StagedSlot(slot=slot, valid_len=valid_len, nbytes=nbytes, spill_path=path)
         self._ram_bytes += nbytes
@@ -798,10 +789,12 @@ class BatchGenerator:
                         torch.cuda.synchronize()
                     step_time_sum += time.perf_counter() - step_start
                     avg_step = step_time_sum / step
+                    rss_gb = psutil.Process().memory_info().rss / 1e9
                     logger.info(
                         f"[perf] phase step={step} active={len(active)} "
                         f"max_active_len={max_active_len} avg_step={avg_step:.4f}s "
-                        f"queue={len(slot_queue)}"
+                        f"queue={len(slot_queue)} rss={rss_gb:.2f}GB "
+                        f"ram_kv={kv_store._ram_bytes / 1e9:.2f}GB"
                     )
 
                 # Periodic safety net: abort phase if free VRAM is critically low
