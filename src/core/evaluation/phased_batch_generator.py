@@ -32,6 +32,35 @@ def _malloc_trim() -> None:
         pass
 
 
+def _pin_glibc_mmap_threshold() -> None:
+    """Pin glibc's M_MMAP_THRESHOLD low and disable adaptive growth.
+
+    Default glibc grows M_MMAP_THRESHOLD up to 32MB after the first large
+    mmap'd chunk is freed, after which same-sized allocations land on the
+    heap (where free only enlarges glibc's freelists). Our per-layer KV
+    staging produces lots of ~13MB tensors that fall into this trap and
+    cause a multi-tens-of-GB gap between tracked KV and process RSS.
+
+    Pinning the threshold via mallopt forces every alloc >128KB through
+    mmap/munmap, so freeing returns pages to the OS immediately. Also bump
+    M_MMAP_MAX so many concurrent staged tensors don't exhaust the cap.
+
+    No-op on non-glibc platforms.
+    """
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL("libc.so.6")
+        # malloc.h: M_MMAP_THRESHOLD = -3, M_MMAP_MAX = -4
+        libc.mallopt(-3, 128 * 1024)
+        libc.mallopt(-4, 0)  # 0 = no limit on number of mmap regions
+    except (OSError, AttributeError):
+        pass
+
+
+_pin_glibc_mmap_threshold()
+
+
 def _mem_snapshot(staged_slots: int | None = None) -> str:
     rss_gb = psutil.Process().memory_info().rss / 1e9
     parts = [f"rss={rss_gb:.2f}GB"]
