@@ -169,9 +169,11 @@ class _StagedKVStore:
             path = self._spill_to_disk(keys, vals)
             self._spilled_count += 1
             self._spilled_bytes += nbytes
+            rss_gb = psutil.Process().memory_info().rss / 1e9
             logger.trace(
                 f"[kv-store] spill slot={slot.index} valid_len={valid_len} "
-                f"nbytes={nbytes / 1e9:.3f}GB ram_kv={self._ram_bytes / 1e9:.2f}GB"
+                f"nbytes={nbytes / 1e9:.3f}GB ram_kv={self._ram_bytes / 1e9:.2f}GB "
+                f"rss={rss_gb:.2f}GB"
             )
             return _StagedSlot(slot=slot, valid_len=valid_len, nbytes=nbytes, spill_path=path)
         self._ram_bytes += nbytes
@@ -781,7 +783,10 @@ class BatchGenerator:
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
             restore_time = time.perf_counter() - restore_start
-            logger.info(f"[perf] Restored {len(chunk_slots)} slots from CPU in {restore_time:.4f}s")
+            logger.info(
+                f"[perf] Restored {len(chunk_slots)} slots from CPU in {restore_time:.4f}s "
+                f"ram_kv={kv_store._ram_bytes / 1e9:.2f}GB"
+            )
 
             if early_promoted > 0:
                 logger.info(f"[phase] Early promoted {early_promoted} slots that exceeded the phase budget")
