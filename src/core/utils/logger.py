@@ -24,18 +24,23 @@ def _tqdm_sink(message: str) -> None:
 
 
 _logger.remove()
+# diagnose=False: better_exceptions' locals renderer calls repr() on every
+# frame's locals. In this codebase those locals are routinely large torch
+# tensors; the renderer can crash mid-format, and loguru's _error_interceptor
+# then swallows the whole record before any sink (file included) is written.
+# Standard tracebacks via backtrace=True are enough.
 _logger.add(
     _tqdm_sink,
     enqueue=True,
     backtrace=True,
-    diagnose=True,
+    diagnose=False,
     level="INFO",
 )
 _logger.add(
     _LOG_FILE,
     enqueue=True,
     backtrace=True,
-    diagnose=True,
+    diagnose=False,
     rotation="100 MB",
     level="TRACE",
 )

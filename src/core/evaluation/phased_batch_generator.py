@@ -175,7 +175,26 @@ class _StagedKVStore:
         v_stacked = torch.stack(vals, dim=0)
         path = os.path.join(self.spill_dir, f"kv_{self._spill_seq:08d}.pt")
         self._spill_seq += 1
-        torch.save({"k": k_stacked, "v": v_stacked}, path)
+        try:
+            torch.save({"k": k_stacked, "v": v_stacked}, path)
+        except Exception:
+            # torch.save's zip-write errors (`unexpected pos X vs Y`,
+            # `basic_ios::clear: iostream error`) almost always mean disk-full
+            # or I/O fault. Surface enough state to tell which without needing
+            # the formatter's locals renderer (which itself fails on tensors).
+            free_bytes = shutil.disk_usage(self.spill_dir).free
+            nbytes = (
+                k_stacked.numel() * k_stacked.element_size()
+                + v_stacked.numel() * v_stacked.element_size()
+            )
+            logger.error(
+                f"[kv-store] spill write failed path={path} "
+                f"size={nbytes / 1e9:.2f}GB "
+                f"spill_dir_free={free_bytes / 1e9:.2f}GB "
+                f"spilled_so_far={self._spilled_bytes / 1e9:.2f}GB "
+                f"spilled_count={self._spilled_count}"
+            )
+            raise
         return path
 
     @staticmethod
