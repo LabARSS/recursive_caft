@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 
 import pandas as pd
+import psutil
 import torch
 from pydantic import BaseModel
 from pydraconf import PydraConfig
@@ -239,6 +240,25 @@ class Evaluator:
             # Without this, by ~chunk 7 the cache thrashes and decode collapses
             # into a recompile-evict-recompile loop.
             torch._dynamo.reset()
+
+            # Post-chunk baseline: nothing is staged, dynamo cache just reset.
+            # RSS at this point == process baseline + inductor on-disk cache
+            # + glibc small-alloc residue. Subtract this from mid-phase RSS in
+            # later chunks to isolate staged-KV-driven growth.
+            rss_gb = psutil.Process().memory_info().rss / 1e9
+            cache_bytes = 0
+            cache_dir = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
+            if cache_dir and os.path.isdir(cache_dir):
+                for root, _dirs, files in os.walk(cache_dir):
+                    for f in files:
+                        try:
+                            cache_bytes += os.path.getsize(os.path.join(root, f))
+                        except OSError:
+                            pass
+            logger.info(
+                f"[mem] post-chunk baseline: rss={rss_gb:.2f}GB "
+                f"inductor_cache={cache_bytes / 1e9:.2f}GB"
+            )
 
         if num_truncated > 0:
             pct = num_truncated / total * 100

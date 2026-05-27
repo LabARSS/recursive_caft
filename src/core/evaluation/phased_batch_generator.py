@@ -42,8 +42,11 @@ def _pin_glibc_mmap_threshold() -> None:
     cause a multi-tens-of-GB gap between tracked KV and process RSS.
 
     Pinning the threshold via mallopt forces every alloc >128KB through
-    mmap/munmap, so freeing returns pages to the OS immediately. Also bump
-    M_MMAP_MAX so many concurrent staged tensors don't exhaust the cap.
+    mmap/munmap, so freeing returns pages to the OS immediately.
+
+    Note: do NOT touch M_MMAP_MAX. The glibc default (65536) is plenty;
+    setting it to 0 actually *disables* mmap entirely, which is the
+    opposite of what we want.
 
     No-op on non-glibc platforms.
     """
@@ -51,9 +54,8 @@ def _pin_glibc_mmap_threshold() -> None:
         import ctypes
 
         libc = ctypes.CDLL("libc.so.6")
-        # malloc.h: M_MMAP_THRESHOLD = -3, M_MMAP_MAX = -4
+        # malloc.h: M_MMAP_THRESHOLD = -3
         libc.mallopt(-3, 128 * 1024)
-        libc.mallopt(-4, 0)  # 0 = no limit on number of mmap regions
     except (OSError, AttributeError):
         pass
 
