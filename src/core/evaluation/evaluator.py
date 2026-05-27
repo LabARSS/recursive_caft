@@ -25,7 +25,7 @@ from core.utils.logger import logger
 # Chunking the prompt list bounds peak CPU RAM to one chunk's staging queue.
 
 # A bit more than quarter of MMLU test
-CHUNK_SIZE = 640
+CHUNK_SIZE = 1280
 
 
 class GenerationConfig(BaseModel):
