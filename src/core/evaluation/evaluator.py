@@ -40,7 +40,7 @@ class GenerationConfig(BaseModel):
     attn_implementation: str | None = "flash_attention_2"
     # Once the cumulative RAM footprint of staged KV cache exceeds this many
     # GB, overflow slots spill to disk instead of RAM.
-    kv_cache_offload_threshold_gb: float = 160.0
+    kv_cache_offload_threshold_gb: float = 120.0
     # Parent directory for spilled KV files. None → "_kv_spill" under the
     # dataset out dir. Keep this on local NVMe — a network mount is slow.
     kv_cache_spill_dir: str | None = None
