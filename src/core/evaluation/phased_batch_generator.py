@@ -1,4 +1,5 @@
 import gc
+import json
 import os
 import shutil
 import tempfile
@@ -584,7 +585,7 @@ class BatchGenerator:
     _PHASE_STEP = 256  # max tokens generated per phase
 
     @torch.no_grad()
-    def generate(self, prompts: list[list[int]]) -> GenerationResult:
+    def generate(self, prompts: list[list[int]], checkpoint_path: str | None = None) -> GenerationResult:
         """Generate responses for a list of prompts using phased generation.
 
         All prompts are prefilled upfront (one-by-one, batch_size=1) with KV
@@ -604,8 +605,42 @@ class BatchGenerator:
         max_prompt_len = max(len(p) for p in prompts)
         max_total = max_prompt_len + self.max_new_tokens
 
-        # --- Prefill all prompts upfront (batch_size=1 temp cache) ---
-        prefill_cache = self._init_cache(max_prompt_len + 1, 1)
+        # --- Resume from a per-chunk checkpoint, if one exists ---
+        # Each completed phase persists finished results + in-flight token ids
+        # (no KV — see _write_checkpoint). On resume we re-prefill the unfinished
+        # rows from prompt + generated_ids to rebuild their KV and continue, so a
+        # crash/relaunch loses minutes (one re-prefill), not the whole chunk.
+        ckpt = self._load_checkpoint(checkpoint_path)
+        resume_rows: dict = ckpt["rows"] if ckpt else {}
+        resume_phase: int | None = ckpt["phase"] if ckpt else None
+
+        # Per prompt: already-done rows seed `results`; the rest need (re-)prefill.
+        # prefill_plan entries: (index, prefill_ids, generated_ids | None).
+        prefill_plan: list[tuple[int, list[int], list[int] | None]] = []
+        for i, prompt_ids in enumerate(prompts):
+            row = resume_rows.get(str(i))
+            if row is not None and row["done"]:
+                results[i] = row["generated_ids"]
+                truncated_flags[i] = row["truncated"]
+                thinking_exhausted_flags[i] = row["thinking_budget_exhausted"]
+                pbar.update(1)
+            elif row is not None and row["generated_ids"]:
+                # In-flight: rebuild KV for prompt + all-but-last generated token,
+                # then resume decoding from the last generated token (see _prefill).
+                gen = row["generated_ids"]
+                prefill_plan.append((i, prompt_ids + gen[:-1], gen))
+            else:
+                prefill_plan.append((i, prompt_ids, None))
+
+        if ckpt is not None:
+            logger.info(
+                f"[ckpt] resuming {checkpoint_path}: completed_phase={resume_phase}, "
+                f"{sum(1 for r in results if r is not None)} done, {len(prefill_plan)} to continue"
+            )
+
+        # --- (Re-)prefill the unfinished prompts (batch_size=1 temp cache) ---
+        max_prefill_len = max((len(pre) for _, pre, _ in prefill_plan), default=1)
+        prefill_cache = self._init_cache(max_prefill_len + 1, 1)
         slot_queue: deque[_StagedSlot] = deque()
 
         # Owns the CPU-staged KV for this call and spills overflow to disk once
@@ -614,17 +649,21 @@ class BatchGenerator:
         try:
             prefill_start = time.perf_counter()
             total_prefill_tokens = 0
-            for i, prompt_ids in enumerate(tqdm(prompts, desc="Prefilling", leave=False)):
+            for i, prefill_ids, gen in tqdm(prefill_plan, desc="Prefilling", leave=False):
                 slot = _Slot(
                     index=i,
-                    prompt_ids=prompt_ids,
-                    prompt_len=len(prompt_ids),
+                    prompt_ids=prompts[i],
+                    prompt_len=len(prompts[i]),
                     in_thinking=self._enforce_thinking_cap,
                 )
                 self._cache = prefill_cache
                 self._valid_lens = [0]
-                self._prefill(slot, prompt_ids, 0)
-                total_prefill_tokens += len(prompt_ids)
+                self._prefill(slot, prefill_ids, 0, resume_generated_ids=gen)
+                total_prefill_tokens += len(prefill_ids)
+                if gen is not None and self._enforce_thinking_cap:
+                    # Reconstruct thinking-cap state from the generated tokens.
+                    slot.in_thinking = self.thinking_end_token_id not in gen
+                    slot.thinking_budget_exhausted = resume_rows[str(i)]["thinking_budget_exhausted"]
 
                 # Stage KV off the GPU (RAM, or disk once over threshold)
                 valid_len = self._valid_lens[0]
@@ -635,8 +674,8 @@ class BatchGenerator:
                 torch.cuda.synchronize()
             prefill_time = time.perf_counter() - prefill_start
             logger.info(
-                f"[perf] Prefill: {len(prompts)} prompts, {total_prefill_tokens} tokens, "
-                f"{prefill_time:.4f}s ({total_prefill_tokens / prefill_time:.0f} tok/s)"
+                f"[perf] Prefill: {len(prefill_plan)} prompts, {total_prefill_tokens} tokens, "
+                f"{prefill_time:.4f}s ({total_prefill_tokens / max(prefill_time, 1e-9):.0f} tok/s)"
             )
 
             # Free prefill cache
@@ -650,11 +689,12 @@ class BatchGenerator:
                 f"phase_step={self._PHASE_STEP} max={self.max_new_tokens}"
             )
 
-            trunc = 0
-            phase = 0
-            total_threshold = min(self._PHASE_STEP, max_total)
+            phase = (resume_phase + 1) if resume_phase is not None else 0
+            total_threshold = min(self._PHASE_STEP * (phase + 1), max_total)
 
             while True:
+                if not slot_queue:
+                    break  # nothing left to generate (e.g. a fully-resumed chunk)
                 promote_queue: deque[_StagedSlot] = deque()
 
                 logger.info(
@@ -667,7 +707,7 @@ class BatchGenerator:
                 )
 
                 is_last = total_threshold >= max_total
-                trunc += self._run_phase(
+                self._run_phase(
                     slot_queue,
                     kv_store,
                     results,
@@ -690,6 +730,12 @@ class BatchGenerator:
                     f"{_mem_snapshot(staged_slots=len(promote_queue))}"
                 )
 
+                # Persist progress for crash-resume (finished results + in-flight
+                # token ids; no KV). Cheap and atomic — see _write_checkpoint.
+                self._write_checkpoint(
+                    checkpoint_path, phase, results, truncated_flags, thinking_exhausted_flags, promote_queue
+                )
+
                 if not promote_queue:
                     break
 
@@ -702,13 +748,80 @@ class BatchGenerator:
             sequences = [r if r is not None else [] for r in results]
             return GenerationResult(
                 sequences=sequences,
-                num_truncated=trunc,
+                # Derive from flags (not the per-run `trunc` counter) so a resumed
+                # chunk also counts truncations that happened before the crash.
+                num_truncated=sum(truncated_flags),
                 total=len(prompts),
                 truncated=truncated_flags,
                 thinking_budget_exhausted=thinking_exhausted_flags,
             )
         finally:
             kv_store.close()
+
+    @staticmethod
+    def _load_checkpoint(checkpoint_path: str | None) -> dict | None:
+        """Load a per-chunk resume checkpoint, or None if absent/unreadable.
+
+        A corrupt/partial checkpoint is treated as absent (the chunk runs fresh),
+        mirroring Evaluator._load_chunk's tolerance for a torn cache file.
+        """
+        if not checkpoint_path or not os.path.exists(checkpoint_path):
+            return None
+        try:
+            with open(checkpoint_path) as f:
+                ckpt = json.load(f)
+            if not isinstance(ckpt.get("phase"), int) or not isinstance(ckpt.get("rows"), dict):
+                raise ValueError("missing/invalid 'phase' or 'rows'")
+            required = ("generated_ids", "done", "truncated", "thinking_budget_exhausted")
+            for row in ckpt["rows"].values():
+                if not all(k in row for k in required):
+                    raise ValueError("row missing required keys")
+            return ckpt
+        except (OSError, ValueError, TypeError) as ex:  # JSONDecodeError is a ValueError
+            logger.warning(f"[ckpt] ignoring unreadable checkpoint {checkpoint_path}: {ex}; running chunk fresh")
+            return None
+
+    @staticmethod
+    def _write_checkpoint(
+        checkpoint_path: str | None,
+        phase: int,
+        results: list[list[int] | None],
+        truncated_flags: list[bool],
+        thinking_exhausted_flags: list[bool],
+        promote_queue: "deque[_StagedSlot]",
+    ) -> None:
+        """Persist finished results + in-flight token ids after a phase (no KV).
+
+        Token ids only (a few MB), written atomically (tmp + os.replace) once per
+        phase — negligible next to the multi-second per-phase KV restores. Lets a
+        re-launched process resume this chunk via generate(checkpoint_path=...).
+        """
+        if not checkpoint_path:
+            return
+        rows: dict[str, dict] = {}
+        for i, gen in enumerate(results):
+            if gen is not None:
+                rows[str(i)] = {
+                    "generated_ids": gen,
+                    "done": True,
+                    "truncated": bool(truncated_flags[i]),
+                    "thinking_budget_exhausted": bool(thinking_exhausted_flags[i]),
+                }
+        for staged in promote_queue:
+            s = staged.slot
+            rows[str(s.index)] = {
+                "generated_ids": s.generated_ids,
+                "done": False,
+                "truncated": False,
+                "thinking_budget_exhausted": bool(s.thinking_budget_exhausted),
+            }
+        tmp = f"{checkpoint_path}.tmp"
+        try:
+            with open(tmp, "w") as f:
+                json.dump({"phase": phase, "rows": rows}, f)
+            os.replace(tmp, checkpoint_path)
+        except OSError as ex:
+            logger.warning(f"[ckpt] failed to write checkpoint {checkpoint_path}: {ex}")
 
     def _run_phase(
         self,
@@ -883,15 +996,24 @@ class BatchGenerator:
         slot: _Slot,
         prefill_ids: list[int],
         batch_idx: int,
+        resume_generated_ids: list[int] | None = None,
     ) -> None:
         """Run the prefill forward pass to build KV cache and sample the first token.
 
         Updates slot.generated_ids in-place with the newly sampled token.
 
+        Resume mode (resume_generated_ids set): `prefill_ids` is prompt + all but
+        the last generated token, so the KV is rebuilt for exactly the positions a
+        non-interrupted run would have cached after generating those tokens. No new
+        token is sampled; slot.generated_ids is restored to the full list and the
+        next decode step continues bit-identically from the last generated token
+        (sampling is argmax/temperature=0 in these evals).
+
         Args:
             slot: The slot to populate (index and prompt_ids must already be set).
             prefill_ids: Token IDs to prefill.
             batch_idx: Which row in the batch cache to use.
+            resume_generated_ids: Full generated-token list when resuming, else None.
         """
         device = self.model.device
         input_ids = torch.tensor([prefill_ids], device=device)
@@ -910,8 +1032,13 @@ class BatchGenerator:
         )
         self._valid_lens[batch_idx] = seq_len
 
-        next_token = self._sample_token(outputs.logits[:, -1, :])
-        slot.generated_ids = [next_token.item()]
+        if resume_generated_ids is None:
+            next_token = self._sample_token(outputs.logits[:, -1, :])
+            slot.generated_ids = [next_token.item()]
+        else:
+            slot.generated_ids = list(resume_generated_ids)
+        # seq_len = prompt_len (fresh) or prompt_len + len(generated) - 1 (resume),
+        # so seq_position = prompt_len + len(generated) in both cases.
         slot.seq_position = seq_len + 1
 
     def _batched_decode(self, batch_indices: list[int], slots: list[_Slot]) -> None:

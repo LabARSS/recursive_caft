@@ -158,6 +158,7 @@ class Evaluator:
             start = chunk_idx * CHUNK_SIZE
             end = min(start + CHUNK_SIZE, total)
             chunk_path = self._chunk_path(chunks_dir, chunk_idx)
+            ckpt_path = chunk_path.with_suffix(".ckpt.json")
 
             cached_rows = self._load_chunk(chunk_path)
             if cached_rows is not None:
@@ -191,7 +192,7 @@ class Evaluator:
                 kv_cache_spill_dir=spill_parent,
             )
 
-            gen_result = generator.generate(chunk_prompts)
+            gen_result = generator.generate(chunk_prompts, checkpoint_path=str(ckpt_path))
 
             chunk_rows: list[dict] = []
             for offset, gen_ids in enumerate(gen_result.sequences):
@@ -219,6 +220,8 @@ class Evaluator:
                 )
 
             self._save_chunk_atomic(chunk_path, chunk_rows)
+            # Chunk is durably saved; its resume checkpoint is no longer needed.
+            ckpt_path.unlink(missing_ok=True)
             all_results.extend(chunk_rows)
             correct += sum(1 for r in chunk_rows if r["is_correct"])
             num_truncated += gen_result.num_truncated
