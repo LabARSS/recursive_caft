@@ -36,7 +36,7 @@ class GenerationConfig(BaseModel):
     temperature: float = 0.0
     top_p: float = 1.0
     top_k: int = -1
-    torch_compile: bool = True
+    torch_compile: bool = False
     attn_implementation: str | None = "flash_attention_2"
     # Once the cumulative RAM footprint of staged KV cache exceeds this many
     # GB, overflow slots spill to disk instead of RAM.
