@@ -1,7 +1,0 @@
-{
-  "accuracy": 0.1625103906899418,
-  "total": 2406,
-  "correct": 391,
-  "num_truncated": 0,
-  "model_path": "/src/recursive_caft/src/experiments/distillation_on_synthetic_traces/mmlu/explained_answer/../../../../../artifacts/base_models_v0/llama_3b"
-}
