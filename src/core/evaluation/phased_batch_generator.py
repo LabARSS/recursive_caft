@@ -373,7 +373,7 @@ class BatchGenerator:
         top_k: int = -1,
         max_thinking_tokens: int | None = None,
         thinking_end_token_id: int | None = None,
-        kv_cache_offload_threshold_gb: float = 120.0,
+        kv_cache_offload_threshold_gb: float = 180.0,
         kv_cache_spill_dir: str | None = None,
     ):
         self.model = model
