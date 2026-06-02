@@ -16,10 +16,26 @@ from __future__ import annotations
 
 import faulthandler
 import signal
+import subprocess
 import sys
 import threading
+from pathlib import Path
 
 from core.utils.logger import LOG_DIR, RUN_BASENAME, logger
+
+
+def _git_sha() -> str:
+    """Best-effort short git SHA of the running checkout, '?' if unavailable."""
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=Path(__file__).resolve().parents[3],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        ).strip()
+    except Exception:
+        return "?"
 
 try:
     sys.stdout.reconfigure(line_buffering=True)
@@ -91,5 +107,5 @@ for _sig_name in ("SIGTERM", "SIGABRT", "SIGHUP"):
 
 logger.info(
     f"[trace] runtime_trace installed (faulthandler, excepthook, signal handlers); "
-    f"faults_file={_FAULTS_FILE}"
+    f"git_sha={_git_sha()} faults_file={_FAULTS_FILE}"
 )

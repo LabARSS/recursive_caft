@@ -82,6 +82,10 @@ class Evaluator:
 
         model, tokenizer = self._load_model()
         model.eval()
+        logger.info(
+            f"[cfg] attn_implementation={getattr(model.config, '_attn_implementation', '?')} "
+            f"dtype={getattr(model, 'dtype', '?')}"
+        )
 
         results: list[EvaluationResult] = []
         for ds, cached in tqdm(zip(self._datasets, cached_results), total=len(self._datasets), desc="Datasets"):

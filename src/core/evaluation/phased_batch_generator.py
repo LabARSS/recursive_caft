@@ -12,7 +12,6 @@ import psutil
 import torch
 from tqdm import tqdm
 from transformers import DynamicCache, PreTrainedModel, PreTrainedTokenizer
-from transformers.cache_utils import _static_cache_update
 
 from core.utils.logger import logger
 
@@ -105,18 +104,18 @@ class _Slot:
 class _StagedSlot:
     """Slot with KV cache staged off the GPU.
 
-    Either RAM-resident (key_cache/value_cache set, spill_path None) or
-    disk-resident (spill_path set, key_cache/value_cache None). Created and
-    consumed exclusively through _StagedKVStore.
+    Either RAM-resident (keys/vals set, spill_path None) or disk-resident
+    (spill_path set, keys/vals None). Created and consumed exclusively through
+    _StagedKVStore.
     """
 
     slot: _Slot
     valid_len: int
     nbytes: int  # total CPU bytes of this slot's K+V tensors
-    # Per-layer CPU tensors: shape [1, num_kv_heads, valid_len, head_dim].
-    # None when the slot has been spilled to disk.
-    key_cache: list[torch.Tensor] | None = None
-    value_cache: list[torch.Tensor] | None = None
+    # One contiguous CPU tensor each, shape [num_layers, 1, num_kv_heads,
+    # valid_len, head_dim]. None when the slot has been spilled to disk.
+    keys: torch.Tensor | None = None
+    vals: torch.Tensor | None = None
     # Path of the on-disk file when spilled; None when RAM-resident.
     spill_path: str | None = None
 
@@ -134,9 +133,9 @@ class _StagedKVStore:
     evicted). Restore reads the slot back — from RAM or disk — and deletes the
     file for disk slots.
 
-    Disk format: the per-layer K and V tensors are each stacked into one
-    contiguous tensor and saved together via torch.save — one file per slot,
-    avoiding per-layer pickle overhead and many small writes.
+    Each slot's K and V are already single contiguous tensors (stacked across
+    layers at stage time), so disk spill is just a torch.save of those two
+    tensors — one file per slot.
     """
 
     def __init__(self, threshold_bytes: int, spill_parent_dir: str | None) -> None:
@@ -152,16 +151,16 @@ class _StagedKVStore:
         logger.info(f"[kv-store] init threshold={threshold_bytes / 1e9:.1f}GB spill_dir={self.spill_dir}")
 
     @staticmethod
-    def _kv_nbytes(keys: list[torch.Tensor], vals: list[torch.Tensor]) -> int:
-        """Total CPU bytes of a slot's per-layer K and V tensors."""
-        return sum(t.numel() * t.element_size() for t in keys) + sum(t.numel() * t.element_size() for t in vals)
+    def _kv_nbytes(keys: torch.Tensor, vals: torch.Tensor) -> int:
+        """Total CPU bytes of a slot's stacked K and V tensors."""
+        return keys.numel() * keys.element_size() + vals.numel() * vals.element_size()
 
     def stage(
         self,
         slot: _Slot,
         valid_len: int,
-        keys: list[torch.Tensor],
-        vals: list[torch.Tensor],
+        keys: torch.Tensor,
+        vals: torch.Tensor,
     ) -> _StagedSlot:
         """Build a _StagedSlot, spilling to disk when tracked KV bytes would exceed the cap."""
         nbytes = self._kv_nbytes(keys, vals)
@@ -177,38 +176,32 @@ class _StagedKVStore:
             )
             return _StagedSlot(slot=slot, valid_len=valid_len, nbytes=nbytes, spill_path=path)
         self._ram_bytes += nbytes
-        return _StagedSlot(slot=slot, valid_len=valid_len, nbytes=nbytes, key_cache=keys, value_cache=vals)
+        return _StagedSlot(slot=slot, valid_len=valid_len, nbytes=nbytes, keys=keys, vals=vals)
 
-    def restore(self, staged: _StagedSlot) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-        """Return (keys, vals) CPU tensors; read+delete the file for disk slots."""
+    def restore(self, staged: _StagedSlot) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return (keys, vals) stacked CPU tensors; read+delete the file for disk slots."""
         if staged.spill_path is not None:
             keys, vals = self._read_from_disk(staged.spill_path)
             os.remove(staged.spill_path)
             return keys, vals
         self._ram_bytes -= staged.nbytes
-        keys, vals = staged.key_cache, staged.value_cache
-        staged.key_cache = staged.value_cache = None
+        keys, vals = staged.keys, staged.vals
+        staged.keys = staged.vals = None
         return keys, vals
 
-    def _spill_to_disk(self, keys: list[torch.Tensor], vals: list[torch.Tensor]) -> str:
-        """Stack per-layer tensors and write one file. Returns the path."""
-        # torch.stack on a new dim 0 -> contiguous [num_layers, 1, kv_heads, valid_len, head_dim].
-        k_stacked = torch.stack(keys, dim=0)
-        v_stacked = torch.stack(vals, dim=0)
+    def _spill_to_disk(self, keys: torch.Tensor, vals: torch.Tensor) -> str:
+        """Write a slot's stacked K and V tensors to one file. Returns the path."""
         path = os.path.join(self.spill_dir, f"kv_{self._spill_seq:08d}.pt")
         self._spill_seq += 1
         try:
-            torch.save({"k": k_stacked, "v": v_stacked}, path)
+            torch.save({"k": keys, "v": vals}, path)
         except Exception:
             # torch.save's zip-write errors (`unexpected pos X vs Y`,
             # `basic_ios::clear: iostream error`) almost always mean disk-full
             # or I/O fault. Surface enough state to tell which without needing
             # the formatter's locals renderer (which itself fails on tensors).
             free_bytes = shutil.disk_usage(self.spill_dir).free
-            nbytes = (
-                k_stacked.numel() * k_stacked.element_size()
-                + v_stacked.numel() * v_stacked.element_size()
-            )
+            nbytes = keys.numel() * keys.element_size() + vals.numel() * vals.element_size()
             logger.error(
                 f"[kv-store] spill write failed path={path} "
                 f"size={nbytes / 1e9:.2f}GB "
@@ -220,11 +213,10 @@ class _StagedKVStore:
         return path
 
     @staticmethod
-    def _read_from_disk(path: str) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-        """Load a spilled file and unstack back into per-layer lists."""
+    def _read_from_disk(path: str) -> tuple[torch.Tensor, torch.Tensor]:
+        """Load a spilled slot's stacked K and V tensors."""
         payload = torch.load(path, map_location="cpu", weights_only=True)
-        k, v = payload["k"], payload["v"]
-        return [k[i] for i in range(k.shape[0])], [v[i] for i in range(v.shape[0])]
+        return payload["k"], payload["v"]
 
     def close(self) -> None:
         """Delete the spill directory. Safe to call multiple times."""
@@ -235,42 +227,12 @@ class _StagedKVStore:
         _malloc_trim()
 
 
-class _PrefillCacheView(DynamicCache):
-    """Lightweight cache view for prefill forward passes.
-
-    Uses _static_cache_update (shared cache_position) with no branches.
-    """
-
-    def update(
-        self,
-        key_states: torch.Tensor,
-        value_states: torch.Tensor,
-        layer_idx: int,
-        cache_kwargs: Optional[dict] = None,
-    ):
-        cache_position = cache_kwargs.get("cache_position") if cache_kwargs else None
-        _static_cache_update(
-            self.key_cache[layer_idx],
-            self.value_cache[layer_idx],
-            key_states,
-            value_states,
-            cache_position,
-        )
-        seq_end = self._active_seq_len + 1
-        return (
-            self.key_cache[layer_idx][:, :, :seq_end, :],
-            self.value_cache[layer_idx][:, :, :seq_end, :],
-        )
-
-    def get_seq_length(self, layer_idx: Optional[int] = 0) -> int:
-        return self._active_seq_len
-
-
 class _PreAllocatedBatchCache(DynamicCache):
     """Pre-allocated KV cache for batched decode with per-row positions.
 
-    Uses a branchless update() (always per-row indexed write). Prefill uses a
-    separate _PrefillCacheView returned by prefill_view().
+    update() does a branchless per-row indexed write, so rows at different
+    sequence lengths can share one decode step. Prefill uses a plain
+    DynamicCache (see BatchGenerator._prefill).
     """
 
     def __init__(
@@ -318,27 +280,32 @@ class _PreAllocatedBatchCache(DynamicCache):
     def get_max_cache_shape(self) -> int:
         return self.max_cache_len
 
-    def prefill_view(self, batch_idx: int, seq_len: int) -> _PrefillCacheView:
-        """Return a single-slot cache wrapper that writes directly into row `batch_idx`."""
-        view = _PrefillCacheView()
-        view._active_seq_len = seq_len - 1  # update() will see seq_end = seq_len
-        view.key_cache = [self.key_cache[i][batch_idx : batch_idx + 1] for i in range(len(self))]
-        view.value_cache = [self.value_cache[i][batch_idx : batch_idx + 1] for i in range(len(self))]
-        return view
+    def stage_row_to_cpu(self, batch_idx: int, valid_len: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """Copy one batch row's KV into a single contiguous CPU tensor each.
 
-    def stage_row_to_cpu(self, batch_idx: int, valid_len: int) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-        """Copy one batch row's KV data to CPU tensors."""
-        keys = [self.key_cache[i][batch_idx : batch_idx + 1, :, :valid_len, :].cpu() for i in range(len(self))]
-        vals = [self.value_cache[i][batch_idx : batch_idx + 1, :, :valid_len, :].cpu() for i in range(len(self))]
+        Returns (keys, vals) of shape [num_layers, 1, kv_heads, valid_len, head_dim].
+        One GPU stack + one device->host copy per K/V (vs one tiny copy per layer),
+        so each slot costs 2 host allocations instead of 2*num_layers.
+        """
+        keys = torch.stack(
+            [self.key_cache[i][batch_idx : batch_idx + 1, :, :valid_len, :] for i in range(len(self))], dim=0
+        ).cpu()
+        vals = torch.stack(
+            [self.value_cache[i][batch_idx : batch_idx + 1, :, :valid_len, :] for i in range(len(self))], dim=0
+        ).cpu()
         return keys, vals
 
-    def restore_row_from_cpu(
-        self, batch_idx: int, valid_len: int, keys: list[torch.Tensor], vals: list[torch.Tensor]
-    ) -> None:
-        """Copy CPU-staged KV data back into a batch row on GPU."""
+    def restore_row_from_cpu(self, batch_idx: int, valid_len: int, keys: torch.Tensor, vals: torch.Tensor) -> None:
+        """Copy a slot's stacked CPU KV back into a batch row on GPU.
+
+        keys/vals: [num_layers, 1, kv_heads, valid_len, head_dim]. One host->device
+        copy per K/V, then per-layer GPU->GPU slice-assign (no host allocations).
+        """
+        k_gpu = keys.to(self.key_cache[0].device)
+        v_gpu = vals.to(self.value_cache[0].device)
         for i in range(len(self)):
-            self.key_cache[i][batch_idx, :, :valid_len, :] = keys[i][0].to(self.key_cache[i].device)
-            self.value_cache[i][batch_idx, :, :valid_len, :] = vals[i][0].to(self.value_cache[i].device)
+            self.key_cache[i][batch_idx, :, :valid_len, :] = k_gpu[i, 0]
+            self.value_cache[i][batch_idx, :, :valid_len, :] = v_gpu[i, 0]
 
 
 class BatchGenerator:
@@ -542,9 +509,7 @@ class BatchGenerator:
                 f"{sum(1 for r in results if r is not None)} done, {len(prefill_plan)} to continue"
             )
 
-        # --- (Re-)prefill the unfinished prompts (batch_size=1 temp cache) ---
-        max_prefill_len = max((len(pre) for _, pre, _ in prefill_plan), default=1)
-        prefill_cache = self._init_cache(max_prefill_len + 1, 1)
+        # --- (Re-)prefill the unfinished prompts (each in its own DynamicCache) ---
         slot_queue: deque[_StagedSlot] = deque()
 
         # Owns the CPU-staged KV for this call and spills overflow to disk once
@@ -560,9 +525,7 @@ class BatchGenerator:
                     prompt_len=len(prompts[i]),
                     in_thinking=self._enforce_thinking_cap,
                 )
-                self._cache = prefill_cache
-                self._valid_lens = [0]
-                self._prefill(slot, prefill_ids, 0, resume_generated_ids=gen)
+                keys, vals, valid_len = self._prefill(slot, prefill_ids, resume_generated_ids=gen)
                 total_prefill_tokens += len(prefill_ids)
                 if gen is not None and self._enforce_thinking_cap:
                     # Reconstruct thinking-cap state from the generated tokens.
@@ -570,8 +533,6 @@ class BatchGenerator:
                     slot.thinking_budget_exhausted = resume_rows[str(i)]["thinking_budget_exhausted"]
 
                 # Stage KV off the GPU (RAM, or disk once over threshold)
-                valid_len = self._valid_lens[0]
-                keys, vals = prefill_cache.stage_row_to_cpu(0, valid_len)
                 slot_queue.append(kv_store.stage(slot, valid_len, keys, vals))
 
             if torch.cuda.is_available():
@@ -582,9 +543,6 @@ class BatchGenerator:
                 f"{prefill_time:.4f}s ({total_prefill_tokens / max(prefill_time, 1e-9):.0f} tok/s)"
             )
 
-            # Free prefill cache
-            self._cache = None
-            prefill_cache = None
             self._measure_usable_vram()
 
             # --- Phase loop ---
@@ -854,8 +812,12 @@ class BatchGenerator:
                 if torch.cuda.is_available() and step % self._vram_check_interval == 0:
                     if self._check_vram_pressure():
                         self._vram_reduced_bs = max(effective_bs // 2, 1)
+                        free, total = torch.cuda.mem_get_info()
                         logger.info(
-                            f"[vram] Free VRAM critically low at step {step}. Aborting phase. "
+                            f"[vram] Free VRAM critically low at step {step}: "
+                            f"free={free / 1e9:.1f}GB/{total / 1e9:.1f}GB "
+                            f"alloc={torch.cuda.memory_allocated() / 1e9:.1f}GB "
+                            f"reserved={torch.cuda.memory_reserved() / 1e9:.1f}GB. Aborting phase. "
                             f"Reducing batch size for next attempt: {effective_bs} -> {self._vram_reduced_bs}."
                         )
                         # Stage active slots back off the GPU and re-queue
@@ -899,12 +861,14 @@ class BatchGenerator:
         self,
         slot: _Slot,
         prefill_ids: list[int],
-        batch_idx: int,
         resume_generated_ids: list[int] | None = None,
-    ) -> None:
-        """Run the prefill forward pass to build KV cache and sample the first token.
+    ) -> tuple[torch.Tensor, torch.Tensor, int]:
+        """Prefill one prompt (batch_size=1) and return its staged KV + length.
 
-        Updates slot.generated_ids in-place with the newly sampled token.
+        Builds KV in a plain DynamicCache, samples the first token (unless
+        resuming), and returns (keys, vals, valid_len) where keys/vals are
+        contiguous CPU tensors of shape [num_layers, 1, kv_heads, seq_len,
+        head_dim] — the same format _StagedKVStore.stage expects.
 
         Resume mode (resume_generated_ids set): `prefill_ids` is prompt + all but
         the last generated token, so the KV is rebuilt for exactly the positions a
@@ -916,7 +880,6 @@ class BatchGenerator:
         Args:
             slot: The slot to populate (index and prompt_ids must already be set).
             prefill_ids: Token IDs to prefill.
-            batch_idx: Which row in the batch cache to use.
             resume_generated_ids: Full generated-token list when resuming, else None.
         """
         device = self.model.device
@@ -925,16 +888,14 @@ class BatchGenerator:
         position_ids = torch.arange(seq_len, device=device).unsqueeze(0)
         cache_position = torch.arange(seq_len, device=device)
 
-        prefill_cache = self._cache.prefill_view(batch_idx, seq_len)
-
+        cache = DynamicCache()
         outputs = self.model(
             input_ids=input_ids,
             position_ids=position_ids,
             cache_position=cache_position,
-            past_key_values=prefill_cache,
+            past_key_values=cache,
             use_cache=True,
         )
-        self._valid_lens[batch_idx] = seq_len
 
         if resume_generated_ids is None:
             next_token = self._sample_token(outputs.logits[:, -1, :])
@@ -944,6 +905,12 @@ class BatchGenerator:
         # seq_len = prompt_len (fresh) or prompt_len + len(generated) - 1 (resume),
         # so seq_position = prompt_len + len(generated) in both cases.
         slot.seq_position = seq_len + 1
+
+        # Stage as two contiguous CPU tensors (one stack + one copy per K/V),
+        # matching _PreAllocatedBatchCache.stage_row_to_cpu's format.
+        keys = torch.stack([k[:, :, :seq_len, :] for k in cache.key_cache], dim=0).cpu()
+        vals = torch.stack([v[:, :, :seq_len, :] for v in cache.value_cache], dim=0).cpu()
+        return keys, vals, seq_len
 
     def _batched_decode(self, batch_indices: list[int], slots: list[_Slot]) -> None:
         """Run a single batched decode step for all active slots.
@@ -963,6 +930,16 @@ class BatchGenerator:
         self._cache._active_seq_len = max_active_len
 
         bs = self._effective_batch_size
+
+        # Guard against an out-of-bounds KV-cache write — that would be a CUDA
+        # illegal memory access that surfaces later (e.g. in a linear) as a
+        # segfault. The write positions ARE the Python-side valid_lens, so this
+        # is a CPU-only check with no GPU sync.
+        max_pos = max(self._valid_lens[i] for i in batch_indices)
+        assert max_pos < self._cache.max_cache_len, (
+            f"KV-cache OOB write: pos={max_pos} >= max_cache_len={self._cache.max_cache_len} "
+            f"(bs={bs}, active={len(batch_indices)}, max_active_len={max_active_len})"
+        )
 
         # --- Vectorised tensor construction (replaces 4 Python for-loops) ---
         # Gather Python-side data into CPU lists, then move to GPU in one shot.
