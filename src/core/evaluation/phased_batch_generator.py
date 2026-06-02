@@ -4,15 +4,12 @@ import os
 import shutil
 import tempfile
 import time
-import types
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
 
 import psutil
 import torch
-import torch.nn.functional as F
-import transformers.modeling_flash_attention_utils as _flash_utils
 from tqdm import tqdm
 from transformers import DynamicCache, PreTrainedModel, PreTrainedTokenizer
 from transformers.cache_utils import _static_cache_update
@@ -399,86 +396,6 @@ class BatchGenerator:
         self._vram_check_interval = 50  # periodic free-VRAM safety check every N decode steps
         self._vram_reduced_bs: int | None = None  # sticky reduced bs after VRAM pressure
         self._usable_vram: int | None = None  # measured once after prefill
-        self._current_max_seqlen: int = 0  # set before each forward call for _get_unpad_data
-
-        self._patch_causal_mask(self.model)
-        self._install_unpad_cache()
-
-    @staticmethod
-    def _patch_causal_mask(model: PreTrainedModel) -> None:
-        """Remove the right-padding check from _update_causal_mask for FA2 compatibility.
-
-        Multiple HF models (Qwen2, Phi4, etc.) raise ValueError when they detect
-        right-padded attention masks with FA2.  The check is a guard — FA2's unpadding
-        works correctly with right-padded masks.  This patch keeps the FA2 mask logic
-        (return mask when it has zeros, else None) but removes the ValueError.
-
-        Walks through wrapper layers (PEFT/LoRA add an extra .model level) to find
-        the inner transformer that owns _update_causal_mask.
-        """
-        # Walk through known wrapper layers to find the object with _update_causal_mask.
-        # Plain:   model.model  (e.g. Qwen2ForCausalLM.model → Qwen2Model)
-        # PEFT:    model.model.model  (PeftModel → LoraModel → XForCausalLM → XModel)
-        candidate = model
-        for _ in range(3):  # up to 3 levels of .model
-            if not hasattr(candidate, "model"):
-                break
-            candidate = candidate.model
-            if hasattr(candidate, "_update_causal_mask"):
-                break
-        else:
-            return
-
-        if not hasattr(candidate, "_update_causal_mask"):
-            return
-
-        original = candidate._update_causal_mask
-
-        def _update_causal_mask(
-            self, attention_mask, input_tensor, cache_position, past_key_values, output_attentions=False
-        ):
-            if self.config._attn_implementation == "flash_attention_2":
-                # Always return the mask for FA2. In batched decode the mask
-                # always contains zeros (padding) so the torch.any() check was
-                # redundant and caused a GPU→CPU sync.
-                return attention_mask
-            return original(attention_mask, input_tensor, cache_position, past_key_values, output_attentions)
-
-        candidate._update_causal_mask = types.MethodType(_update_causal_mask, candidate)
-
-    def _install_unpad_cache(self) -> None:
-        """Patch _get_unpad_data to cache per data_ptr and use CPU-known max_seqlen.
-
-        HF calls _get_unpad_data once per decoder layer (28× per forward pass)
-        with the *same* attention mask. The original does nonzero + .item() each
-        time — 28 GPU→CPU syncs. This patch computes once and returns cached
-        results for subsequent layers. max_seqlen is taken from
-        self._current_max_seqlen (set in _batched_decode from Python-known
-        valid_lens) to avoid the .item() GPU→CPU sync entirely.
-        """
-        original = _flash_utils._get_unpad_data
-        generator = self
-        _cache: dict = {}
-
-        def _cached_get_unpad_data(attention_mask: torch.Tensor):
-            key = attention_mask.data_ptr()
-            if key in _cache:
-                return _cache[key]
-            seqlens_in_batch = attention_mask.sum(dim=-1, dtype=torch.int32)
-            indices = torch.nonzero(attention_mask.flatten(), as_tuple=False).flatten()
-            max_seqlen = generator._current_max_seqlen
-            cu_seqlens = F.pad(torch.cumsum(seqlens_in_batch, dim=0, dtype=torch.int32), (1, 0))
-            result = (indices, cu_seqlens, max_seqlen)
-            _cache[key] = result
-            return result
-
-        def _clear():
-            _cache.clear()
-
-        _cached_get_unpad_data.clear_cache = _clear
-        _flash_utils._get_unpad_data = _cached_get_unpad_data
-        self._unpad_clear = _clear
-        self._original_get_unpad_data = original
 
     def _init_cache(self, max_seq_len: int, batch_size: int) -> _PreAllocatedBatchCache:
         config = self.model.config
@@ -1076,9 +993,6 @@ class BatchGenerator:
         position_ids = torch.zeros(bs, 1, dtype=torch.long, device=device)
         position_ids[batch_idx_t, 0] = seq_positions_t
 
-        # Tell the unpad cache the max seq length so it can skip .item() sync
-        self._current_max_seqlen = seq_width
-
         # Single forward() call — model writes new KV via per-row cache positions
         outputs = self.model(
             input_ids=input_ids,
@@ -1088,9 +1002,6 @@ class BatchGenerator:
             past_key_values=self._cache,
             use_cache=True,
         )
-
-        # Clear the per-forward unpad cache so next step recomputes
-        self._unpad_clear()
 
         # Sample next token per slot and advance valid_lens
         for i, slot in zip(batch_indices, slots):

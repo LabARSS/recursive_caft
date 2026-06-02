@@ -36,7 +36,11 @@ class GenerationConfig(BaseModel):
     temperature: float = 0.0
     top_p: float = 1.0
     top_k: int = -1
-    attn_implementation: str | None = "flash_attention_2"
+    # SDPA, not flash_attention_2: the phased batched decode segfaults inside
+    # FA2's unpad/pad path (EXIT=139) at certain decode shapes. The eval is
+    # launch/sync-bound, not attention-FLOP-bound, so SDPA's slower attention is
+    # negligible here, and it needs none of the FA2-specific mask/unpad patches.
+    attn_implementation: str | None = "sdpa"
     # Once the cumulative RAM footprint of staged KV cache exceeds this many
     # GB, overflow slots spill to disk instead of RAM.
     kv_cache_offload_threshold_gb: float = 120.0
