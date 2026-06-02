@@ -36,7 +36,6 @@ class GenerationConfig(BaseModel):
     temperature: float = 0.0
     top_p: float = 1.0
     top_k: int = -1
-    torch_compile: bool = False
     attn_implementation: str | None = "flash_attention_2"
     # Once the cumulative RAM footprint of staged KV cache exceeds this many
     # GB, overflow slots spill to disk instead of RAM.
@@ -79,43 +78,6 @@ class Evaluator:
 
         model, tokenizer = self._load_model()
         model.eval()
-
-        if self.config.generation.torch_compile:
-            if not torch.cuda.is_available():
-                logger.warning("torch_compile=True but CUDA not available — skipping compilation.")
-            else:
-                # Inductor's default cache lives at /tmp/torchinductor_<user>. In
-                # Docker, /tmp is usually tmpfs (RAM-backed) with a small size cap
-                # set at container start — a few GB at most. After several
-                # compile-heavy runs the cache fills the tmpfs and the next write
-                # fails with `OSError: [Errno 28] No space left on device`.
-                # Redirect to artifacts/_inductor_cache under the repo so the
-                # cache lives next to other run outputs and is trivial to inspect
-                # or wipe. Skipped if the user already set TORCHINDUCTOR_CACHE_DIR.
-                if "TORCHINDUCTOR_CACHE_DIR" not in os.environ:
-                    _repo_root = Path(__file__).resolve().parents[3]
-                    _cache_dir = str(_repo_root / "artifacts" / "_inductor_cache")
-                    os.makedirs(_cache_dir, exist_ok=True)
-                    os.environ["TORCHINDUCTOR_CACHE_DIR"] = _cache_dir
-                    logger.info(f"[trace] TORCHINDUCTOR_CACHE_DIR={_cache_dir}")
-
-                logger.info("Compiling model with torch.compile... First forward call will be slow.")
-                torch.set_float32_matmul_precision("high")
-                torch._dynamo.config.cache_size_limit = 2048
-                torch._dynamo.config.suppress_errors = False
-                torch._dynamo.config.verbose = False
-                # Default inductor worker pool is min(32, cpu_count). Each worker is a
-                # forked Python with torch loaded; under COW divergence the pool can
-                # consume tens of GB. Cap to 4 — recompiles here are infrequent and
-                # the parallelism wasn't buying much.
-                import torch._inductor.config as _inductor_config
-
-                _inductor_config.compile_threads = 4
-                logger.info(
-                    f"[trace] torch.compile config: cache_size_limit={torch._dynamo.config.cache_size_limit} "
-                    f"compile_threads={_inductor_config.compile_threads}"
-                )
-                model = torch.compile(model)
 
         results: list[EvaluationResult] = []
         for ds, cached in tqdm(zip(self._datasets, cached_results), total=len(self._datasets), desc="Datasets"):
@@ -237,28 +199,12 @@ class Evaluator:
             # stage_row_to_cpu produces 2*num_layers small allocs per slot, so
             # arenas fragment heavily over a run.
             _malloc_trim()
-            # Wipe the dynamo compile cache between chunks. Cached entries from
-            # earlier chunks see different (bs, seq_width, max_cache_len) tuples
-            # and count toward cache_size_limit without serving the next chunk.
-            # Without this, by ~chunk 7 the cache thrashes and decode collapses
-            # into a recompile-evict-recompile loop.
-            torch._dynamo.reset()
 
-            # Post-chunk baseline: nothing is staged, dynamo cache just reset.
-            # RSS at this point == process baseline + inductor on-disk cache
-            # + glibc small-alloc residue. Subtract this from mid-phase RSS in
-            # later chunks to isolate staged-KV-driven growth.
+            # Post-chunk baseline: nothing is staged. RSS here == process baseline
+            # + glibc small-alloc residue. Subtract from mid-phase RSS in later
+            # chunks to isolate staged-KV-driven growth.
             rss_gb = psutil.Process().memory_info().rss / 1e9
-            cache_bytes = 0
-            cache_dir = os.environ.get("TORCHINDUCTOR_CACHE_DIR")
-            if cache_dir and os.path.isdir(cache_dir):
-                for root, _dirs, files in os.walk(cache_dir):
-                    for f in files:
-                        try:
-                            cache_bytes += os.path.getsize(os.path.join(root, f))
-                        except OSError:
-                            pass
-            logger.info(f"[mem] post-chunk baseline: rss={rss_gb:.2f}GB inductor_cache={cache_bytes / 1e9:.2f}GB")
+            logger.info(f"[mem] post-chunk baseline: rss={rss_gb:.2f}GB")
 
         if num_truncated > 0:
             pct = num_truncated / total * 100

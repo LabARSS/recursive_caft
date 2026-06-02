@@ -241,8 +241,7 @@ class _StagedKVStore:
 class _PrefillCacheView(DynamicCache):
     """Lightweight cache view for prefill forward passes.
 
-    Uses _static_cache_update (shared cache_position) with no branches,
-    so torch.compile can trace a single code path per layer.
+    Uses _static_cache_update (shared cache_position) with no branches.
     """
 
     def update(
@@ -273,12 +272,9 @@ class _PrefillCacheView(DynamicCache):
 class _PreAllocatedBatchCache(DynamicCache):
     """Pre-allocated KV cache for batched decode with per-row positions.
 
-    Uses a branchless update() (always per-row indexed write) so
-    torch.compile sees a single code path and avoids guard explosion.
-    Prefill uses a separate _PrefillCacheView returned by prefill_view().
+    Uses a branchless update() (always per-row indexed write). Prefill uses a
+    separate _PrefillCacheView returned by prefill_view().
     """
-
-    is_compileable = True
 
     def __init__(
         self,
@@ -299,8 +295,6 @@ class _PreAllocatedBatchCache(DynamicCache):
         for _ in range(num_layers):
             k = torch.zeros(cache_shape, dtype=dtype, device=device)
             v = torch.zeros(cache_shape, dtype=dtype, device=device)
-            torch._dynamo.mark_static_address(k)
-            torch._dynamo.mark_static_address(v)
             self.key_cache.append(k)
             self.value_cache.append(v)
 
@@ -377,13 +371,6 @@ class BatchGenerator:
         kv_cache_spill_dir: str | None = None,
     ):
         self.model = model
-        # Use uncompiled model for prefill, compiled for decode — mirrors HF generate().
-        if hasattr(model, "_orig_mod"):
-            self._compiled_model = model
-            self._uncompiled_model = model._orig_mod
-        else:
-            self._compiled_model = model
-            self._uncompiled_model = model
         self.tokenizer = tokenizer
         self.max_new_tokens = max_new_tokens
         self.max_batch_size = max_batch_size
@@ -414,7 +401,7 @@ class BatchGenerator:
         self._usable_vram: int | None = None  # measured once after prefill
         self._current_max_seqlen: int = 0  # set before each forward call for _get_unpad_data
 
-        self._patch_causal_mask(self._uncompiled_model)
+        self._patch_causal_mask(self.model)
         self._install_unpad_cache()
 
     @staticmethod
@@ -453,7 +440,7 @@ class BatchGenerator:
             if self.config._attn_implementation == "flash_attention_2":
                 # Always return the mask for FA2. In batched decode the mask
                 # always contains zeros (padding) so the torch.any() check was
-                # redundant and caused a GPU→CPU sync + torch.compile graph break.
+                # redundant and caused a GPU→CPU sync.
                 return attention_mask
             return original(attention_mask, input_tensor, cache_position, past_key_values, output_attentions)
 
@@ -852,10 +839,10 @@ class BatchGenerator:
         # Pre-allocation VRAM check: reduce batch size until cache fits (pure math)
         effective_bs = self._fit_batch_size_to_vram(max_cache_len, effective_bs)
 
-        # Track the slot count directly. mark_dynamic on bs made phase-to-phase
-        # bs changes free, so the prior hysteresis policy (suppress changes <25%)
-        # only served to waste compute on padding rows. Just snap to even for
-        # warp-aligned kernels.
+        # Track the slot count directly. With eager execution (no torch.compile),
+        # phase-to-phase bs changes are free, so the prior hysteresis policy
+        # (suppress changes <25%) only wasted compute on padding rows. Just snap
+        # to even for warp-aligned kernels.
         effective_bs = self._snap_to_even(effective_bs)
 
         if effective_bs != self._effective_batch_size:
@@ -1023,7 +1010,7 @@ class BatchGenerator:
 
         prefill_cache = self._cache.prefill_view(batch_idx, seq_len)
 
-        outputs = self._uncompiled_model(
+        outputs = self.model(
             input_ids=input_ids,
             position_ids=position_ids,
             cache_position=cache_position,
@@ -1092,18 +1079,8 @@ class BatchGenerator:
         # Tell the unpad cache the max seq length so it can skip .item() sync
         self._current_max_seqlen = seq_width
 
-        # Without these hints, every distinct (bs, seq_width) combination
-        # triggers a fresh inductor compile. Across phases and chunks that
-        # is thousands of compiles — the worker pool eventually deadlocks
-        # (subproc_pool._recv_msg stuck) and the cgroup OOMKills.
-        torch._dynamo.mark_dynamic(input_ids, 0)
-        torch._dynamo.mark_dynamic(attn_mask, 0)
-        torch._dynamo.mark_dynamic(attn_mask, 1)
-        torch._dynamo.mark_dynamic(position_ids, 0)
-        torch._dynamo.mark_dynamic(cache_position, 0)
-
         # Single forward() call — model writes new KV via per-row cache positions
-        outputs = self._compiled_model(
+        outputs = self.model(
             input_ids=input_ids,
             attention_mask=attn_mask,
             position_ids=position_ids,
