@@ -2,7 +2,13 @@ import gc
 import hashlib
 import json
 import os
+import pickle
 import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -29,6 +35,17 @@ from core.utils.logger import logger
 CHUNK_SIZE = 640
 
 
+# --- Per-unit crash isolation ------------------------------------------------
+# The eval GPU is flaky and dies with a native SIGSEGV (EXIT=139) mid-run (see
+# the corrected-AER RxErr storm on 0000:61:00.0). Evaluator.evaluate() runs each
+# dataset's _evaluate_single in its own fresh subprocess (_eval_worker.py) and
+# restarts it on a nonzero exit — a fresh process per unit gives a full resource
+# reset (CUDA context, caching allocator, host RAM) even on clean exit, and
+# isolates crashes; resume rides the per-chunk/per-phase checkpoints. The parent
+# does no GPU work, so it survives the crashes. Disable with EVAL_SUPERVISE=0.
+_WORKER_PATH = str(Path(__file__).with_name("_eval_worker.py"))
+
+
 class GenerationConfig(BaseModel):
     max_new_tokens: int
     max_thinking_tokens: int | None = None
@@ -36,11 +53,7 @@ class GenerationConfig(BaseModel):
     temperature: float = 0.0
     top_p: float = 1.0
     top_k: int = -1
-    # SDPA, not flash_attention_2: the phased batched decode segfaults inside
-    # FA2's unpad/pad path (EXIT=139) at certain decode shapes. The eval is
-    # launch/sync-bound, not attention-FLOP-bound, so SDPA's slower attention is
-    # negligible here, and it needs none of the FA2-specific mask/unpad patches.
-    attn_implementation: str | None = "sdpa"
+    attn_implementation: str | None = "flash_attention_2"
     # Once the cumulative RAM footprint of staged KV cache exceeds this many
     # GB, overflow slots spill to disk instead of RAM.
     kv_cache_offload_threshold_gb: float = 120.0
@@ -76,25 +89,122 @@ class Evaluator:
 
     def evaluate(self) -> list[EvaluationResult]:
         cached_results: list[EvaluationResult | None] = [self._load_cached_result(ds) for ds in self._datasets]
-
         if all(r is not None for r in cached_results):
             return cached_results  # type: ignore[return-value]
 
+        # Escape hatch / non-GPU debugging: run everything in this process.
+        if os.environ.get("EVAL_SUPERVISE") == "0":
+            return self._evaluate_in_process(cached_results)
+
+        # Default: one fresh subprocess per uncached dataset (full resource reset
+        # even on clean exit), each restarted on crash. Pickle config+tokenizer
+        # once; the worker rebuilds the Evaluator, loads the model, and runs
+        # _evaluate_single, which writes results.json — recovered here via the cache.
+        fd, spec_path = tempfile.mkstemp(prefix="eval_spec_", suffix=".pkl")
+        results: list[EvaluationResult] = []
+        try:
+            with os.fdopen(fd, "wb") as f:
+                pickle.dump((self.config, self.tokenizer), f, protocol=pickle.HIGHEST_PROTOCOL)
+            for ds_idx, (ds, cached) in enumerate(
+                tqdm(zip(self._datasets, cached_results), total=len(self._datasets), desc="Datasets")
+            ):
+                if cached is not None:
+                    results.append(cached)
+                    continue
+                self._run_unit_in_child(spec_path, ds_idx)
+                result = self._load_cached_result(ds)
+                if result is None:
+                    raise RuntimeError(
+                        f"eval worker for dataset {ds_idx} exited 0 but wrote no results at "
+                        f"{self._eval_results_path_for(ds)}"
+                    )
+                results.append(result)
+        finally:
+            try:
+                os.unlink(spec_path)
+            except OSError:
+                pass
+        return results
+
+    def _evaluate_in_process(self, cached_results: list[EvaluationResult | None]) -> list[EvaluationResult]:
+        """Run every dataset's _evaluate_single in this process (no subprocesses).
+
+        Used for EVAL_SUPERVISE=0 (local / non-GPU debugging). The crash-isolation
+        path is evaluate() spawning one worker per dataset instead.
+        """
         model, tokenizer = self._load_model()
         model.eval()
         logger.info(
             f"[cfg] attn_implementation={getattr(model.config, '_attn_implementation', '?')} "
             f"dtype={getattr(model, 'dtype', '?')}"
         )
-
         results: list[EvaluationResult] = []
         for ds, cached in tqdm(zip(self._datasets, cached_results), total=len(self._datasets), desc="Datasets"):
             if cached is not None:
                 results.append(cached)
             else:
                 results.append(self._evaluate_single(ds, model, tokenizer))
-
         return results
+
+    def _run_unit_in_child(self, spec_path: str, ds_idx: int) -> None:
+        """Run one _evaluate_single (dataset ds_idx) in a fresh subprocess.
+
+        Restarts on any nonzero exit (the flaky GPU dies with SIGSEGV/139); resume
+        rides the chunk/phase checkpoints. A circuit breaker hard-stops on repeated
+        fast failures (a deterministic bug, not transient infra) so we never spin
+        forever. SIGINT/SIGTERM are forwarded to the child, then handlers restored.
+        """
+        min_healthy_s = float(os.environ.get("EVAL_MIN_HEALTHY_S", "120"))
+        max_fast = int(os.environ.get("EVAL_MAX_FAST_FAILURES", "3"))
+        max_attempts = int(os.environ.get("EVAL_MAX_UNIT_ATTEMPTS", "50"))
+        # EVAL_SUPERVISE=0 in the child guards against any accidental nested spawn.
+        cmd = [sys.executable, _WORKER_PATH, spec_path, str(ds_idx)]
+        child_env = {**os.environ, "EVAL_SUPERVISE": "0"}
+
+        proc: subprocess.Popen | None = None
+
+        def _forward_signal(signum, _frame):
+            if proc is not None and proc.poll() is None:
+                proc.send_signal(signum)
+
+        prev_handlers = [(s, signal.getsignal(s)) for s in (signal.SIGINT, signal.SIGTERM)]
+        for s, _ in prev_handlers:
+            try:
+                signal.signal(s, _forward_signal)
+            except (ValueError, OSError):
+                pass
+        try:
+            consecutive_fast = 0
+            for attempt in range(1, max_attempts + 1):
+                start = time.monotonic()
+                logger.info(f"[unit] dataset={ds_idx} starting worker attempt={attempt}")
+                proc = subprocess.Popen(cmd, env=child_env)
+                code = proc.wait()
+                dur = time.monotonic() - start
+                if code == 0:
+                    logger.info(f"[unit] dataset={ds_idx} worker attempt={attempt} finished in {dur:.0f}s.")
+                    return
+                consecutive_fast = consecutive_fast + 1 if dur < min_healthy_s else 0
+                logger.warning(
+                    f"[unit] dataset={ds_idx} worker attempt={attempt} pid={proc.pid} crashed: "
+                    f"exit={code} after {dur:.0f}s (consecutive_fast={consecutive_fast})"
+                )
+                if consecutive_fast >= max_fast:
+                    raise RuntimeError(
+                        f"[unit] dataset={ds_idx}: {consecutive_fast} consecutive crashes in "
+                        f"<{min_healthy_s:.0f}s — looks deterministic, not transient infra. "
+                        f"Aborting (last exit={code})."
+                    )
+                backoff = min(30.0, 2.0**consecutive_fast)
+                logger.info(f"[unit] dataset={ds_idx} restarting in {backoff:.0f}s …")
+                time.sleep(backoff)
+            raise RuntimeError(f"[unit] dataset={ds_idx}: exceeded max_unit_attempts={max_attempts}.")
+        finally:
+            for s, handler in prev_handlers:
+                try:
+                    signal.signal(s, handler)
+                except (ValueError, OSError):
+                    pass
 
     def _evaluate_single(self, eval_dataset: QADatasetAdapter, model, tokenizer) -> EvaluationResult:
         ds = eval_dataset.process_dataset()
