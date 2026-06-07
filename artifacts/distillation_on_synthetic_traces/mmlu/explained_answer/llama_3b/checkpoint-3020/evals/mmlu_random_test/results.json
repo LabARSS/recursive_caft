@@ -1,0 +1,7 @@
+{
+  "accuracy": 0.4222776392352452,
+  "total": 2406,
+  "correct": 1016,
+  "num_truncated": 7,
+  "model_path": "/src/recursive_caft/src/experiments/distillation_on_synthetic_traces/mmlu/explained_answer/../../../../../artifacts/distillation_on_synthetic_traces/mmlu/explained_answer/llama_3b/checkpoint-3020"
+}
