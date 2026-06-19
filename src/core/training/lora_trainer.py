@@ -73,7 +73,7 @@ class LoRATrainer[TConfig: LoRATrainerConfig = LoRATrainerConfig](BaseTrainer[TC
     @override
     def model(self) -> PreTrainedModel:
         if not self._model:
-            model = AutoModelForCausalLM.from_pretrained(self.config.model_id)
+            model = AutoModelForCausalLM.from_pretrained(self.config.model_id, **self._model_load_kwargs())
             peft_config = LoraConfig(
                 r=self.config.lora_training_args.r,
                 lora_alpha=self.config.lora_training_args.alpha,

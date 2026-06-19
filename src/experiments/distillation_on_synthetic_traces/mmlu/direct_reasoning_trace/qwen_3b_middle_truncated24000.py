@@ -11,12 +11,14 @@ from core.evaluation.multi_checkpoint_evaluator import (
     MultiCheckpointEvaluator,
     MultiCheckpointEvaluatorConfig,
 )
+from core.training.base_trainer import PackingConfig
 from core.training.lora_trainer import (
     LoRASpecificTrainingArgs,
     LoRATrainer,
     LoRATrainerConfig,
     LoRATrainingArgs,
 )
+from core.training.packing_budgets import packing_budget
 from core.training.thinking_tokens import setup_thinking_tokens
 
 MODEL_NAME = Path(__file__).parent.joinpath("../../../../../artifacts/base_models_v0/qwen_3b").as_posix()
@@ -51,8 +53,14 @@ trainer = LoRATrainer(
                 tokenizer=tokenizer,
             )
         ),
-        training_args=LoRATrainingArgs(num_train_epochs=20, per_device_train_batch_size=2),
+        training_args=LoRATrainingArgs(num_train_epochs=20, per_device_train_batch_size=1),
         lora_training_args=LoRASpecificTrainingArgs(train_thinking_token_embeddings=True),
+        # The long tail of chains (2-3x median) no longer forces a tiny batch: pack the
+        # variable-length rows into fixed budget-sized blocks with per-document FA2
+        # isolation. bs=1; the budget is the empirically measured max sequence that fits
+        # on one H100 (> the longest single chain, so one long doc + a few short ones share
+        # a pack). See packing_budget_probe.ipynb / packing_budgets.py.
+        packing=PackingConfig(budget=packing_budget("qwen_3b")),
         save_schedule=[1, 3, 5, 10, 15, 20],
     ),
     tokenizer=tokenizer,

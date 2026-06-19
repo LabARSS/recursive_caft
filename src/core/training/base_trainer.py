@@ -18,10 +18,24 @@ from transformers.modeling_utils import PreTrainedModel
 from transformers.trainer_seq2seq import Seq2SeqTrainer
 
 from core.datasets.abstract_dataset_adapter import AbstractDatasetAdapter
+from core.datasets.sequence_packing import pack_dataset, sequence_length_stats
 from core.training.callbacks.save_by_schedule import SaveByScheduleCallback
+from core.training.packed_data_collator import PackedSequenceCollator
 from core.utils.last_checkpoint_dir import get_last_checkpoint_dir
 from core.utils.logger import logger
 from core.utils.seed import set_seed
+
+
+class PackingConfig(BaseModel):
+    # Sequence packing concatenates the variable-length rows into fixed-size blocks so a
+    # long tail of rows no longer forces a tiny batch size. Per-document attention is
+    # isolated via FlashAttention-2 varlen driven by position_ids; see
+    # core.datasets.sequence_packing.
+    #
+    # budget: tokens per packed block -- the empirically measured max sequence that fits on
+    # the GPU. See core.training.packing_budgets and src/preprocessing/packing_budget_probe.ipynb.
+    # Required, and must be >= the dataset's longest sequence (asserted before training).
+    budget: int
 
 
 class BaseTrainingArgs(BaseModel):
@@ -53,6 +67,9 @@ class BaseTrainerConfig[TTrainingArgs: BaseTrainingArgs = BaseTrainingArgs](Pydr
     train_dataset: AbstractDatasetAdapter
     training_args: TTrainingArgs
     save_schedule: list[int] | None = None
+    # When set, enable sequence packing (see PackingConfig). Pair with
+    # per_device_train_batch_size=1 -- each pack already fills the budget.
+    packing: PackingConfig | None = None
 
 
 class BaseTrainer[TConfig: BaseTrainerConfig[Any] = BaseTrainerConfig]:
@@ -60,6 +77,8 @@ class BaseTrainer[TConfig: BaseTrainerConfig[Any] = BaseTrainerConfig]:
         self.config = config
         self._tokenizer: PreTrainedTokenizer | None = tokenizer
         self._model: PreTrainedModel | None = None
+        # Populated by _prepare_data when packing is on: {num_docs, num_packs, budget}.
+        self._packing_stats: dict[str, int] | None = None
 
     def train(self):
         if not self._directory_is_empty(self.config.out_path, self.config.training_args.num_train_epochs):
@@ -92,13 +111,24 @@ class BaseTrainer[TConfig: BaseTrainerConfig[Any] = BaseTrainerConfig]:
     @property
     def model(self) -> PreTrainedModel:
         if not self._model:
-            self._model = AutoModelForCausalLM.from_pretrained(self.config.model_id)
+            self._model = AutoModelForCausalLM.from_pretrained(self.config.model_id, **self._model_load_kwargs())
 
         assert self._model is not None, "Model should be initialized"
         return self._model
 
+    def _model_load_kwargs(self) -> dict[str, Any]:
+        # Packing relies on FlashAttention-2 varlen for per-document isolation. No
+        # torch_dtype is forced: the FA2 integration takes its dtype from the active
+        # autocast (bf16=True), so master weights / optimizer states stay fp32 and the
+        # precision regime matches the non-packed runs.
+        if self.config.packing is None:
+            return {}
+        return {"attn_implementation": "flash_attention_2"}
+
     @property
     def data_collator(self):
+        if self.config.packing is not None:
+            return PackedSequenceCollator()
         return DataCollatorForTokenClassification(
             tokenizer=self.tokenizer, padding=True, pad_to_multiple_of=8, return_tensors="pt"
         )
@@ -110,14 +140,58 @@ class BaseTrainer[TConfig: BaseTrainerConfig[Any] = BaseTrainerConfig]:
                 exclude={"effective_train_batch_size", "per_device_train_batch_size", "gradient_accumulation_steps"}
             ),
             **self._batch_size_config(
-                self.config.training_args.effective_train_batch_size,
+                self._resolve_effective_train_batch_size(),
                 self.config.training_args.per_device_train_batch_size,
             ),
             output_dir=self.config.out_path,
         )
 
+    def _resolve_effective_train_batch_size(self) -> int:
+        """Effective batch size, kept docs-equivalent when packing.
+
+        `effective_train_batch_size` means "examples per optimizer update". A packed
+        block holds many examples, so keeping the configured value would balloon the
+        real batch. Rescale it by num_packs/num_docs so each update still aggregates
+        ~the same number of examples as the non-packed run."""
+        configured = self.config.training_args.effective_train_batch_size
+        if self.config.packing is None:
+            return configured
+
+        assert self._packing_stats is not None, (
+            "Packing stats must be computed before building training_args; "
+            "_prepare_data() runs first in train()."
+        )
+        num_docs = self._packing_stats["num_docs"]
+        num_packs = self._packing_stats["num_packs"]
+        resolved = max(1, round(configured * num_packs / num_docs))
+        logger.info(
+            f"Packing: effective_train_batch_size {configured} docs -> {resolved} packs "
+            f"(num_docs={num_docs}, num_packs={num_packs}, docs/pack={num_docs / num_packs:.2f})"
+        )
+        return resolved
+
     def _prepare_data(self) -> torch.utils.data.Dataset:
         train_ds = self.config.train_dataset.process_dataset()
+
+        if self.config.packing is not None:
+            # Pack the rows into fixed budget-sized blocks. Lengths come from the
+            # already-tokenized rows -- no second tokenization pass. Stash counts so
+            # training_args can keep the effective batch docs-equivalent.
+            lengths = [len(ids) for ids in train_ds["input_ids"]]
+            sequence_length_stats(lengths)
+            budget = self.config.packing.budget
+            max_len = max(lengths)
+            assert budget >= max_len, (
+                f"Packing budget {budget} is smaller than the longest sequence {max_len}; "
+                "that doc cannot fit in a block. Raise the budget in packing_budgets.py "
+                "or tighten dataset truncation."
+            )
+            num_docs = len(train_ds)
+            pad_token_id = self.tokenizer.pad_token_id
+            assert isinstance(pad_token_id, int), "Tokenizer must have an integer pad_token_id for packing"
+            train_ds = pack_dataset(train_ds, budget=budget, pad_token_id=pad_token_id)
+            self._packing_stats = {"num_docs": num_docs, "num_packs": len(train_ds), "budget": budget}
+
         logger.info("Dataset samples")
         logger.info("Train")
         logger.info(f"Input: {self.tokenizer.decode(train_ds[0]['input_ids'])}")
