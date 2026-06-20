@@ -121,6 +121,11 @@ class GenerationResult:
     total: int
     truncated: list[bool] = field(default_factory=list)
     thinking_budget_exhausted: list[bool] = field(default_factory=list)
+    # True for sequences stopped at a per-call carry boundary (length-stage cap)
+    # without hitting EOS or the global max_new_tokens: still-running survivors the
+    # caller pools across chunks and re-prefills in the next stage. Always all-False
+    # when generate() is called without carry_at_new_tokens (the default).
+    unfinished: list[bool] = field(default_factory=list)
 
 
 @dataclass
@@ -578,25 +583,53 @@ class BatchGenerator:
     _PHASE_STEP = 512  # max tokens generated per phase
 
     @torch.no_grad()
-    def generate(self, prompts: list[list[int]], checkpoint_path: str | None = None) -> GenerationResult:
+    def generate(
+        self,
+        prompts: list[list[int]],
+        checkpoint_path: str | None = None,
+        carry_at_new_tokens: int | None = None,
+        resume_generated: list[list[int] | None] | None = None,
+        resume_thinking_exhausted: list[bool] | None = None,
+    ) -> GenerationResult:
         """Generate responses for a list of prompts using phased generation.
 
         All prompts are prefilled upfront (one-by-one, batch_size=1) with KV
         cache staged on CPU. Then decode phases restore slots to GPU, decode
         in batches, and re-stage promoted slots to CPU for the next phase.
 
+        Length-stage carry (optional): when `carry_at_new_tokens` is set, a
+        sequence that reaches that many generated tokens without hitting EOS or
+        the global `max_new_tokens` is stopped and returned as *unfinished*
+        (GenerationResult.unfinished[i] == True) rather than truncated. The caller
+        pools these survivors across chunks and re-issues them in the next stage
+        via `resume_generated`. With `carry_at_new_tokens=None` (the default)
+        behavior is identical to single-pass generation.
+
         Args:
             prompts: List of token ID sequences (one per sample).
+            checkpoint_path: Per-call crash-resume checkpoint (token ids only).
+            carry_at_new_tokens: Stop sequences at this many generated tokens and
+                mark them unfinished (None → run to EOS/max_new_tokens as before).
+            resume_generated: Per-prompt tokens already generated in a prior stage
+                (None entry → fresh prompt). Rebuilt via the prefill resume path.
+            resume_thinking_exhausted: Per-prompt thinking-budget-exhausted state to
+                restore for seeded rows (parallel to `resume_generated`).
 
         Returns:
-            GenerationResult with generated sequences and truncation stats.
+            GenerationResult with generated sequences and truncation/unfinished stats.
         """
         results: list[list[int] | None] = [None] * len(prompts)
         truncated_flags: list[bool] = [False] * len(prompts)
         thinking_exhausted_flags: list[bool] = [False] * len(prompts)
+        unfinished_flags: list[bool] = [False] * len(prompts)
         pbar = tqdm(total=len(prompts), desc="Generating")
         max_prompt_len = max(len(p) for p in prompts)
-        max_total = max_prompt_len + self.max_new_tokens
+        # When a carry cap is set, the phase loop runs only to that many new tokens
+        # and returns still-running sequences as unfinished. The cap (clamped to
+        # max_new_tokens by the caller) drives max_total so total_threshold /
+        # is_last / phase_budget / cache sizing all stop at the stage boundary.
+        effective_budget = carry_at_new_tokens if carry_at_new_tokens is not None else self.max_new_tokens
+        max_total = max_prompt_len + effective_budget
 
         # --- Resume from a per-chunk checkpoint, if one exists ---
         # Each completed phase persists finished results + in-flight token ids
@@ -612,16 +645,22 @@ class BatchGenerator:
         prefill_plan: list[tuple[int, list[int], list[int] | None]] = []
         for i, prompt_ids in enumerate(prompts):
             row = resume_rows.get(str(i))
+            seed = resume_generated[i] if resume_generated is not None else None
             if row is not None and row["done"]:
                 results[i] = row["generated_ids"]
                 truncated_flags[i] = row["truncated"]
                 thinking_exhausted_flags[i] = row["thinking_budget_exhausted"]
                 pbar.update(1)
             elif row is not None and row["generated_ids"]:
-                # In-flight: rebuild KV for prompt + all-but-last generated token,
-                # then resume decoding from the last generated token (see _prefill).
+                # In-flight checkpoint (strictly newer than any stage seed): rebuild
+                # KV for prompt + all-but-last generated token, then resume decoding
+                # from the last generated token (see _prefill).
                 gen = row["generated_ids"]
                 prefill_plan.append((i, prompt_ids + gen[:-1], gen))
+            elif seed:
+                # Cross-stage carry seed: this prompt already generated `seed` tokens
+                # in a prior length-stage. Same re-prefill path as checkpoint resume.
+                prefill_plan.append((i, prompt_ids + seed[:-1], seed))
             else:
                 prefill_plan.append((i, prompt_ids, None))
 
@@ -652,7 +691,11 @@ class BatchGenerator:
                 if gen is not None and self._enforce_thinking_cap:
                     # Reconstruct thinking-cap state from the generated tokens.
                     slot.in_thinking = self.thinking_end_token_id not in gen
-                    slot.thinking_budget_exhausted = resume_rows[str(i)]["thinking_budget_exhausted"]
+                    ckpt_row = resume_rows.get(str(i))
+                    if ckpt_row is not None:
+                        slot.thinking_budget_exhausted = ckpt_row["thinking_budget_exhausted"]
+                    elif resume_thinking_exhausted is not None:
+                        slot.thinking_budget_exhausted = resume_thinking_exhausted[i]
 
                 # Stage KV off the GPU (RAM, or disk once over threshold)
                 slot_queue.append(kv_store.stage(slot, valid_len, keys, vals))
@@ -673,13 +716,26 @@ class BatchGenerator:
                 f"phase_step={self._PHASE_STEP} max={self.max_new_tokens}"
             )
 
-            phase = (resume_phase + 1) if resume_phase is not None else 0
+            # Start the phase counter so total_threshold immediately clears the
+            # already-staged length. Fresh prompts start at 0; seeded survivors
+            # (stage > 0) start past their prior tokens so we don't churn empty
+            # phases early-promoting every slot until the threshold catches up.
+            has_seed = resume_generated is not None and any(s for s in resume_generated)
+            if resume_phase is not None:
+                phase = resume_phase + 1
+            elif has_seed and slot_queue:
+                phase = max(s.valid_len for s in slot_queue) // self._PHASE_STEP
+            else:
+                phase = 0
             total_threshold = min(self._PHASE_STEP * (phase + 1), max_total)
 
+            # Bound before the loop so the post-loop carry sweep is safe even when the
+            # loop breaks on the first iteration (e.g. a fully-resumed sub-chunk).
+            promote_queue: deque[_StagedSlot] = deque()
             while True:
                 if not slot_queue:
                     break  # nothing left to generate (e.g. a fully-resumed chunk)
-                promote_queue: deque[_StagedSlot] = deque()
+                promote_queue = deque()
 
                 logger.info(
                     f"[phase] Starting phase {phase + 1}: {len(slot_queue)} sequences, "
@@ -697,11 +753,13 @@ class BatchGenerator:
                     results,
                     truncated_flags,
                     thinking_exhausted_flags,
+                    unfinished_flags,
                     total_threshold,
                     promote_queue,
                     pbar,
                     total_threshold + 1,
                     is_last,
+                    carry_at_new_tokens,
                 )
 
                 self._cache = None
@@ -716,17 +774,45 @@ class BatchGenerator:
 
                 # Persist progress for crash-resume (finished results + in-flight
                 # token ids; no KV). Cheap and atomic — see _write_checkpoint.
+                # Carried survivors are written as in-flight (done=False) so a
+                # resume re-decodes and re-carries them idempotently.
                 self._write_checkpoint(
-                    checkpoint_path, phase, results, truncated_flags, thinking_exhausted_flags, promote_queue
+                    checkpoint_path,
+                    phase,
+                    results,
+                    truncated_flags,
+                    thinking_exhausted_flags,
+                    unfinished_flags,
+                    promote_queue,
                 )
 
                 if not promote_queue:
+                    break
+                # With a carry cap, a non-empty promote_queue on the final phase
+                # (is_last) is carried survivors — e.g. staged off the GPU by a
+                # VRAM-pressure abort. Stop and record them as unfinished (below)
+                # instead of re-running. Without a carry cap, fall through to the
+                # normal re-run path (preserves VRAM-abort recovery on the last phase).
+                if carry_at_new_tokens is not None and is_last:
                     break
 
                 slot_queue = promote_queue
                 phase += 1
                 total_threshold = min(self._PHASE_STEP * (phase + 1), max_total)
                 logger.info(f"[phase] Phase {phase}: {len(slot_queue)} sequences promoted")
+
+            # Record any sequence still queued at the carry boundary as an unfinished
+            # survivor. Normally empty (hit_carry already recorded carries directly);
+            # this only catches slots a VRAM abort staged off the GPU on the last phase.
+            if carry_at_new_tokens is not None:
+                for staged in promote_queue:
+                    s = staged.slot
+                    if results[s.index] is None:
+                        results[s.index] = s.generated_ids
+                        thinking_exhausted_flags[s.index] = s.thinking_budget_exhausted
+                        unfinished_flags[s.index] = True
+                        pbar.update(1)
+                promote_queue.clear()
 
             pbar.close()
             sequences = [r if r is not None else [] for r in results]
@@ -738,6 +824,7 @@ class BatchGenerator:
                 total=len(prompts),
                 truncated=truncated_flags,
                 thinking_budget_exhausted=thinking_exhausted_flags,
+                unfinished=unfinished_flags,
             )
         finally:
             kv_store.close()
@@ -772,6 +859,7 @@ class BatchGenerator:
         results: list[list[int] | None],
         truncated_flags: list[bool],
         thinking_exhausted_flags: list[bool],
+        unfinished_flags: list[bool],
         promote_queue: "deque[_StagedSlot]",
     ) -> None:
         """Persist finished results + in-flight token ids after a phase (no KV).
@@ -779,6 +867,10 @@ class BatchGenerator:
         Token ids only (a few MB), written atomically (tmp + os.replace) once per
         phase — negligible next to the multi-second per-phase KV restores. Lets a
         re-launched process resume this chunk via generate(checkpoint_path=...).
+
+        Carried survivors (a carry boundary stopped them, `unfinished_flags[i]`)
+        are persisted as in-flight (done=False) so resume re-decodes and re-carries
+        them idempotently rather than treating them as finished.
         """
         if not checkpoint_path:
             return
@@ -787,7 +879,7 @@ class BatchGenerator:
             if gen is not None:
                 rows[str(i)] = {
                     "generated_ids": gen,
-                    "done": True,
+                    "done": not unfinished_flags[i],
                     "truncated": bool(truncated_flags[i]),
                     "thinking_budget_exhausted": bool(thinking_exhausted_flags[i]),
                 }
@@ -814,11 +906,13 @@ class BatchGenerator:
         results: list[list[int] | None],
         truncated_flags: list[bool],
         thinking_exhausted_flags: list[bool],
+        unfinished_flags: list[bool],
         total_threshold: int,
         promote_queue: deque[_StagedSlot],
         pbar: tqdm,
         max_cache_len: int,
         is_last: bool,
+        carry_cap: int | None = None,
     ) -> int:
         """Run a complete phase with static batching.
 
@@ -952,11 +1046,21 @@ class BatchGenerator:
                             promote_queue.append(slot_queue.popleft())
                         break
 
-                # Check per-slot completion (EOS / max_new_tokens)
+                # Check per-slot completion (EOS / max_new_tokens / carry boundary)
                 for batch_idx, slot in active:
                     last_token = slot.generated_ids[-1]
-                    if last_token == self.eos_token_id or len(slot.generated_ids) >= self.max_new_tokens:
-                        if last_token != self.eos_token_id:
+                    n = len(slot.generated_ids)
+                    hit_eos = last_token == self.eos_token_id
+                    hit_global = n >= self.max_new_tokens
+                    # Carry boundary (length-stage cap): stop without finishing so the
+                    # caller pools this sequence across chunks and re-prefills it next
+                    # stage. EOS and the global cap take precedence — a sequence that
+                    # also ended naturally or hit the hard budget is genuinely done.
+                    hit_carry = carry_cap is not None and n >= carry_cap and not hit_eos and not hit_global
+                    if hit_eos or hit_global or hit_carry:
+                        if hit_carry:
+                            unfinished_flags[slot.index] = True
+                        elif not hit_eos:
                             num_truncated += 1
                             truncated_flags[slot.index] = True
                         results[slot.index] = slot.generated_ids

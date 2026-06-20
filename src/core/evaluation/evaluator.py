@@ -64,6 +64,13 @@ class GenerationConfig(BaseModel):
     # has enough RAM to hold the RAM-resident staged KV page-locked; set False on
     # RAM-constrained hosts (also auto-falls-back to pageable if pinning fails).
     kv_cache_pin_memory: bool = True
+    # Outer length-stage boundary (absolute generated-token count). Each stage
+    # decodes the pooled survivors only up to the next multiple of this value,
+    # then carries still-running sequences (token ids, re-prefilled next stage)
+    # so the long tail is batched across chunks instead of decoded once per chunk
+    # at a near-empty batch. >= max_new_tokens reproduces single-pass generation.
+    # Best as a multiple of BatchGenerator._PHASE_STEP (512) for clean phase grids.
+    stage_new_tokens: int = 3072
 
 
 class EvaluatorConfig(PydraConfig):
@@ -179,10 +186,6 @@ class Evaluator:
 
         qa_dataset: QADataset = eval_dataset.dataset
 
-        correct = 0
-        num_truncated = 0
-        all_results: list[dict] = []
-
         thinking_end_token_id: int | None = None
         if self.config.generation.max_thinking_tokens is not None:
             resolved = getattr(tokenizer, "thinking_end_token_id", None)
@@ -192,100 +195,100 @@ class Evaluator:
             )
             thinking_end_token_id = resolved
 
-        num_chunks = (total + CHUNK_SIZE - 1) // CHUNK_SIZE
         chunks_dir = self._chunks_dir_for(eval_dataset)
         chunks_dir.mkdir(parents=True, exist_ok=True)
 
-        for chunk_idx in range(num_chunks):
-            start = chunk_idx * CHUNK_SIZE
-            end = min(start + CHUNK_SIZE, total)
-            chunk_path = self._chunk_path(chunks_dir, chunk_idx)
-            ckpt_path = chunk_path.with_suffix(".ckpt.json")
-
-            cached_rows = self._load_chunk(chunk_path)
-            if cached_rows is not None:
-                logger.info(f"Chunk {chunk_idx + 1}/{num_chunks}: loaded {len(cached_rows)} rows from {chunk_path}")
-                all_results.extend(cached_rows)
-                correct += sum(1 for r in cached_rows if r["is_correct"])
-                num_truncated += sum(1 for r in cached_rows if r["is_truncated"])
-                continue
-
-            chunk_prompts = prompts[start:end]
-            logger.info(f"Chunk {chunk_idx + 1}/{num_chunks}: prompts [{start}:{end}] ({len(chunk_prompts)} samples)")
-
-            if chunk_idx == 0:
-                for i, prompt in enumerate(chunk_prompts[:3]):
-                    logger.info(f"Example prompt {i}: {tokenizer.decode(prompt, skip_special_tokens=False)}")
-
-            spill_parent = self.config.generation.kv_cache_spill_dir or str(
-                self._out_path_for(eval_dataset) / "_kv_spill"
-            )
-            generator = BatchGenerator(
-                model=model,
-                tokenizer=tokenizer,
-                max_new_tokens=self.config.generation.max_new_tokens,
-                max_batch_size=self.config.generation.max_batch_size,
-                temperature=self.config.generation.temperature,
-                top_p=self.config.generation.top_p,
-                top_k=self.config.generation.top_k,
-                max_thinking_tokens=self.config.generation.max_thinking_tokens,
-                thinking_end_token_id=thinking_end_token_id,
-                kv_cache_offload_threshold_gb=self.config.generation.kv_cache_offload_threshold_gb,
-                kv_cache_spill_dir=spill_parent,
-                kv_cache_pin_memory=self.config.generation.kv_cache_pin_memory,
+        stage_size = self.config.generation.stage_new_tokens
+        max_new = self.config.generation.max_new_tokens
+        if stage_size % BatchGenerator._PHASE_STEP != 0:
+            logger.warning(
+                f"stage_new_tokens={stage_size} is not a multiple of phase step "
+                f"{BatchGenerator._PHASE_STEP}; stage boundaries won't align with the "
+                f"phase grid (correct, but mildly less efficient)."
             )
 
-            gen_result = generator.generate(chunk_prompts, checkpoint_path=str(ckpt_path))
+        if total > 0:
+            for i, prompt in enumerate(prompts[:3]):
+                logger.info(f"Example prompt {i}: {tokenizer.decode(prompt, skip_special_tokens=False)}")
 
-            chunk_rows: list[dict] = []
-            for offset, gen_ids in enumerate(gen_result.sequences):
-                row = ds[start + offset]
-                response = tokenizer.decode(gen_ids, skip_special_tokens=False).strip()
-                is_truncated = gen_result.truncated[offset]
-                is_thinking_budget_exhausted = gen_result.thinking_budget_exhausted[offset]
+        # --- Outer length-stage loop ---
+        # Each stage decodes the pooled survivors only up to the next `stage_size`
+        # boundary, then carries still-running sequences (token ids, re-prefilled
+        # next stage) so the long tail is batched across chunks rather than decoded
+        # once per chunk at a near-empty batch. stage_size >= max_new => a single
+        # stage, identical to single-pass generation.
+        #
+        # Resume is driven entirely by the per-(stage, sub_chunk) result files: a
+        # restarted worker replays this loop from stage 0, cache-hits completed
+        # sub_chunks (re-deriving the survivor flow deterministically under greedy
+        # decoding), and runs the first uncomputed sub_chunk. Per-phase crash
+        # granularity inside a sub_chunk rides the generator's own checkpoint.
+        all_results: list[dict] = []
+        correct = 0
+        num_truncated = 0
 
-                try:
-                    parsed_answer, is_correct = qa_dataset.verify_assistant_response(row, response)
-                except Exception as ex:
-                    logger.warning(f"Error verifying row {row['row_id']}: {ex}")
-                    parsed_answer = response
-                    is_correct = False
+        pending: list[dict] = [
+            {
+                "row_id": ds[i]["row_id"],
+                "ds_index": i,
+                "prompt_ids": prompts[i],
+                "prior_generated": [],
+                "thinking_budget_exhausted": False,
+            }
+            for i in range(total)
+        ]
 
-                chunk_rows.append(
-                    {
-                        "row_id": row["row_id"],
-                        "response": response,
-                        "parsed_answer": parsed_answer,
-                        "is_correct": is_correct,
-                        "is_truncated": is_truncated,
-                        "is_thinking_budget_exhausted": is_thinking_budget_exhausted,
-                    }
-                )
+        stage = 0
+        while pending:
+            carry_len = min((stage + 1) * stage_size, max_new)
+            # Final stage (carry_len == max_new): pass None so sequences truncate at
+            # the hard budget instead of carrying (there is no next stage to pool to).
+            carry_arg = None if carry_len >= max_new else carry_len
+            stage_dir = chunks_dir / f"stage_{stage:02d}"
+            stage_dir.mkdir(parents=True, exist_ok=True)
 
-            self._save_chunk_atomic(chunk_path, chunk_rows)
-            # Chunk is durably saved; its resume checkpoint is no longer needed.
-            ckpt_path.unlink(missing_ok=True)
-            all_results.extend(chunk_rows)
-            correct += sum(1 for r in chunk_rows if r["is_correct"])
-            num_truncated += gen_result.num_truncated
+            num_sub = (len(pending) + CHUNK_SIZE - 1) // CHUNK_SIZE
+            logger.info(
+                f"Stage {stage + 1}: {len(pending)} sequences, carry_len={carry_len} "
+                f"({'final' if carry_arg is None else 'pooling'}), {num_sub} sub-chunk(s)"
+            )
 
-            # Release the chunk's CPU-staged KV caches before the next chunk
-            # prefills its own. Without this, peak CPU RAM keeps climbing.
-            del generator, gen_result
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            # gc.collect() drops Python refs; the chunks then sit in glibc's
-            # per-arena freelists and never return to the OS. The .cpu() in
-            # stage_row_to_cpu produces 2*num_layers small allocs per slot, so
-            # arenas fragment heavily over a run.
-            _malloc_trim()
+            survivors: list[dict] = []
+            for sub_idx in range(num_sub):
+                sub = pending[sub_idx * CHUNK_SIZE : (sub_idx + 1) * CHUNK_SIZE]
+                result_path = stage_dir / f"subchunk_{sub_idx:04d}.result.json"
 
-            # Post-chunk baseline: nothing is staged. RSS here == process baseline
-            # + glibc small-alloc residue. Subtract from mid-phase RSS in later
-            # chunks to isolate staged-KV-driven growth.
-            rss_gb = psutil.Process().memory_info().rss / 1e9
-            logger.info(f"[mem] post-chunk baseline: rss={rss_gb:.2f}GB")
+                cached = self._load_subchunk_result(result_path)
+                if cached is not None:
+                    finished_rows, sub_survivors = cached
+                    logger.info(
+                        f"Stage {stage + 1} sub-chunk {sub_idx + 1}/{num_sub}: loaded "
+                        f"{len(finished_rows)} finished + {len(sub_survivors)} survivors from cache"
+                    )
+                else:
+                    logger.info(
+                        f"Stage {stage + 1} sub-chunk {sub_idx + 1}/{num_sub}: {len(sub)} sequences"
+                    )
+                    finished_rows, sub_survivors = self._run_subchunk(
+                        sub=sub,
+                        stage_dir=stage_dir,
+                        sub_idx=sub_idx,
+                        carry_at_new_tokens=carry_arg,
+                        ds=ds,
+                        qa_dataset=qa_dataset,
+                        model=model,
+                        tokenizer=tokenizer,
+                        thinking_end_token_id=thinking_end_token_id,
+                        eval_dataset=eval_dataset,
+                    )
+
+                all_results.extend(finished_rows)
+                correct += sum(1 for r in finished_rows if r["is_correct"])
+                num_truncated += sum(1 for r in finished_rows if r["is_truncated"])
+                survivors.extend(sub_survivors)
+
+            pending = survivors
+            stage += 1
 
         if num_truncated > 0:
             pct = num_truncated / total * 100
@@ -293,6 +296,12 @@ class Evaluator:
                 f"Generation reached max_new_tokens ({self.config.generation.max_new_tokens}) "
                 f"for {num_truncated}/{total} sequences ({pct:.1f}%)"
             )
+
+        # Restore original dataset order, then drop the internal ds_index helper key
+        # so responses.parquet keeps its original schema.
+        all_results.sort(key=lambda r: r["ds_index"])
+        for r in all_results:
+            r.pop("ds_index", None)
 
         accuracy = correct / total if total > 0 else 0.0
         result = EvaluationResult(accuracy=accuracy, total=total, correct=correct, num_truncated=num_truncated)
@@ -303,6 +312,108 @@ class Evaluator:
         self._cleanup_chunks(eval_dataset)
 
         return result
+
+    def _run_subchunk(
+        self,
+        sub: list[dict],
+        stage_dir: Path,
+        sub_idx: int,
+        carry_at_new_tokens: int | None,
+        ds,
+        qa_dataset: QADataset,
+        model,
+        tokenizer,
+        thinking_end_token_id: int | None,
+        eval_dataset: QADatasetAdapter,
+    ) -> tuple[list[dict], list[dict]]:
+        """Generate one sub-chunk up to the stage's carry boundary.
+
+        Returns (finished_rows, survivors): finished rows are decoded + verified;
+        survivors carry their token ids (prompt + generated-so-far) to the next
+        length-stage. The (finished, survivors) split is persisted atomically so a
+        restarted worker can cache-hit this sub_chunk instead of re-decoding it.
+        """
+        result_path = stage_dir / f"subchunk_{sub_idx:04d}.result.json"
+        ckpt_path = stage_dir / f"subchunk_{sub_idx:04d}.ckpt.json"
+
+        spill_parent = self.config.generation.kv_cache_spill_dir or str(self._out_path_for(eval_dataset) / "_kv_spill")
+        generator = BatchGenerator(
+            model=model,
+            tokenizer=tokenizer,
+            max_new_tokens=self.config.generation.max_new_tokens,
+            max_batch_size=self.config.generation.max_batch_size,
+            temperature=self.config.generation.temperature,
+            top_p=self.config.generation.top_p,
+            top_k=self.config.generation.top_k,
+            max_thinking_tokens=self.config.generation.max_thinking_tokens,
+            thinking_end_token_id=thinking_end_token_id,
+            kv_cache_offload_threshold_gb=self.config.generation.kv_cache_offload_threshold_gb,
+            kv_cache_spill_dir=spill_parent,
+            kv_cache_pin_memory=self.config.generation.kv_cache_pin_memory,
+        )
+
+        gen_result = generator.generate(
+            [r["prompt_ids"] for r in sub],
+            checkpoint_path=str(ckpt_path),
+            carry_at_new_tokens=carry_at_new_tokens,
+            resume_generated=[(r["prior_generated"] or None) for r in sub],
+            resume_thinking_exhausted=[r["thinking_budget_exhausted"] for r in sub],
+        )
+
+        finished_rows: list[dict] = []
+        sub_survivors: list[dict] = []
+        for offset, gen_ids in enumerate(gen_result.sequences):
+            src = sub[offset]
+            if gen_result.unfinished[offset]:
+                sub_survivors.append(
+                    {
+                        "row_id": src["row_id"],
+                        "ds_index": src["ds_index"],
+                        "prompt_ids": src["prompt_ids"],
+                        "prior_generated": gen_ids,
+                        "thinking_budget_exhausted": bool(gen_result.thinking_budget_exhausted[offset]),
+                    }
+                )
+                continue
+
+            ds_row = ds[src["ds_index"]]
+            response = tokenizer.decode(gen_ids, skip_special_tokens=False).strip()
+            try:
+                parsed_answer, is_correct = qa_dataset.verify_assistant_response(ds_row, response)
+            except Exception as ex:
+                logger.warning(f"Error verifying row {ds_row['row_id']}: {ex}")
+                parsed_answer = response
+                is_correct = False
+
+            finished_rows.append(
+                {
+                    "row_id": ds_row["row_id"],
+                    "ds_index": src["ds_index"],
+                    "response": response,
+                    "parsed_answer": parsed_answer,
+                    "is_correct": is_correct,
+                    "is_truncated": bool(gen_result.truncated[offset]),
+                    "is_thinking_budget_exhausted": bool(gen_result.thinking_budget_exhausted[offset]),
+                }
+            )
+
+        self._save_subchunk_result(result_path, finished_rows, sub_survivors)
+        # Sub-chunk is durably saved; its per-phase resume checkpoint is no longer needed.
+        ckpt_path.unlink(missing_ok=True)
+
+        # Release this sub-chunk's CPU-staged KV before the next prefills its own.
+        del generator, gen_result
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        # gc.collect() drops Python refs; the chunks then sit in glibc's per-arena
+        # freelists and never return to the OS. stage_row_to_cpu produces many small
+        # allocs per slot, so arenas fragment heavily over a run.
+        _malloc_trim()
+        rss_gb = psutil.Process().memory_info().rss / 1e9
+        logger.info(f"[mem] post-subchunk baseline: rss={rss_gb:.2f}GB")
+
+        return finished_rows, sub_survivors
 
     def _config_hash(self) -> str:
         gen = self.config.generation
@@ -316,6 +427,7 @@ class Evaluator:
                 gen.top_p,
                 gen.top_k,
                 CHUNK_SIZE,
+                gen.stage_new_tokens,
             )
         )
         return hashlib.md5(raw.encode()).hexdigest()[:12]
@@ -323,23 +435,28 @@ class Evaluator:
     def _chunks_dir_for(self, eval_dataset: QADatasetAdapter) -> Path:
         return self._out_path_for(eval_dataset) / f"_chunks_{self._config_hash()}"
 
-    def _chunk_path(self, chunks_dir: Path, chunk_idx: int) -> Path:
-        return chunks_dir / f"chunk_{chunk_idx:04d}.json"
+    @staticmethod
+    def _load_subchunk_result(path: Path) -> tuple[list[dict], list[dict]] | None:
+        """Load a cached (finished_rows, survivors) sub-chunk result, or None.
 
-    def _load_chunk(self, path: Path) -> list[dict] | None:
+        A corrupt/partial file is treated as absent (the sub-chunk reruns), mirroring
+        _load_chunk's old tolerance. Under greedy decoding a rerun reproduces the same
+        finished/survivor split, so later stages' caches stay consistent.
+        """
         if not path.exists():
             return None
         try:
             with open(path) as f:
-                return json.load(f)
-        except json.JSONDecodeError as ex:
-            logger.warning(f"Corrupt chunk cache at {path} ({ex}); will regenerate")
+                data = json.load(f)
+            return data["finished"], data["survivors"]
+        except (json.JSONDecodeError, KeyError, TypeError) as ex:
+            logger.warning(f"Corrupt sub-chunk result at {path} ({ex}); will regenerate")
             return None
 
-    def _save_chunk_atomic(self, path: Path, rows: list[dict]) -> None:
+    def _save_subchunk_result(self, path: Path, finished_rows: list[dict], survivors: list[dict]) -> None:
         tmp = path.with_suffix(".json.tmp")
         with open(tmp, "w") as f:
-            json.dump(rows, f)
+            json.dump({"finished": finished_rows, "survivors": survivors}, f)
         os.replace(tmp, path)
 
     def _cleanup_chunks(self, eval_dataset: QADatasetAdapter) -> None:

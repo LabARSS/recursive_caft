@@ -9,6 +9,7 @@ model.generate() under greedy decoding (temperature=0).
 Performance tests measure wall-clock time: batched vs sequential decode.
 """
 
+import json
 import time
 
 import pytest
@@ -43,6 +44,66 @@ def _hf_generate_greedy(model, tokenizer, prompt_ids: list[int], max_new_tokens:
         )
     # Strip prompt from output
     return output[0, len(prompt_ids) :].tolist()
+
+
+def _staged_generate(
+    model,
+    tokenizer,
+    prompts: list[list[int]],
+    max_new_tokens: int,
+    stage_size: int,
+    max_batch_size: int,
+    max_thinking_tokens: int | None = None,
+    thinking_end_token_id: int | None = None,
+):
+    """Drive BatchGenerator across length-stages the way Evaluator._evaluate_single does.
+
+    Each stage decodes the pooled survivors only up to the next `stage_size`
+    boundary, carries unfinished sequences (token ids) forward, and re-issues them
+    via resume_generated. Returns (sequences, truncated, thinking_exhausted) in the
+    original prompt order — should equal a single-pass generate() under greedy decode.
+    """
+    n = len(prompts)
+    sequences: list[list[int] | None] = [None] * n
+    truncated = [False] * n
+    thinking_exhausted = [False] * n
+    pending = [{"orig": i, "prompt": prompts[i], "prior": [], "te": False} for i in range(n)]
+    stage = 0
+    while pending:
+        carry_len = min((stage + 1) * stage_size, max_new_tokens)
+        carry_arg = None if carry_len >= max_new_tokens else carry_len
+        gen = BatchGenerator(
+            model=model,
+            tokenizer=tokenizer,
+            max_new_tokens=max_new_tokens,
+            max_batch_size=max_batch_size,
+            max_thinking_tokens=max_thinking_tokens,
+            thinking_end_token_id=thinking_end_token_id,
+        )
+        r = gen.generate(
+            [p["prompt"] for p in pending],
+            carry_at_new_tokens=carry_arg,
+            resume_generated=[(p["prior"] or None) for p in pending],
+            resume_thinking_exhausted=[p["te"] for p in pending],
+        )
+        next_pending = []
+        for off, p in enumerate(pending):
+            if r.unfinished[off]:
+                next_pending.append(
+                    {
+                        "orig": p["orig"],
+                        "prompt": p["prompt"],
+                        "prior": r.sequences[off],
+                        "te": r.thinking_budget_exhausted[off],
+                    }
+                )
+            else:
+                sequences[p["orig"]] = r.sequences[off]
+                truncated[p["orig"]] = r.truncated[off]
+                thinking_exhausted[p["orig"]] = r.thinking_budget_exhausted[off]
+        pending = next_pending
+        stage += 1
+    return sequences, truncated, thinking_exhausted
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -566,3 +627,155 @@ class TestPerformance:
 
         # Sanity: all should complete without error (no assertion on speed
         # since tiny-gpt2 on CPU may not show clear scaling)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Length-stage carry tests (cross-chunk pooling of the long tail)
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestLengthStageCarry:
+    """carry_at_new_tokens stops still-running sequences at a length-stage boundary
+    and returns them as `unfinished`, to be pooled across chunks and re-prefilled in
+    the next stage. Staged generation must stay byte-identical to single-pass / HF."""
+
+    def test_default_unfinished_all_false(self, model_and_tokenizer):
+        """Without carry_at_new_tokens, nothing is unfinished (behavior unchanged)."""
+        model, tokenizer = model_and_tokenizer
+        prompts = [tokenizer.encode("Hello world"), tokenizer.encode("Once upon a time")]
+        gen = BatchGenerator(model=model, tokenizer=tokenizer, max_new_tokens=MAX_NEW_TOKENS, max_batch_size=2)
+        r = gen.generate(prompts)
+        assert r.unfinished == [False, False]
+
+    def test_staged_matches_single_stage_and_hf(self, model_and_tokenizer):
+        """Multi-stage carry + re-prefill is byte-identical to one pass and to HF."""
+        model, tokenizer = model_and_tokenizer
+        prompts = [
+            tokenizer.encode("Hello world"),
+            tokenizer.encode("The quick brown fox jumps over the lazy dog and then"),
+            tokenizer.encode("Once"),
+        ]
+
+        gen = BatchGenerator(model=model, tokenizer=tokenizer, max_new_tokens=MAX_NEW_TOKENS, max_batch_size=2)
+        single = gen.generate(prompts).sequences
+
+        # stage_size=5 forces several carry/re-prefill boundaries (5, 10, 15, 20).
+        staged, _, _ = _staged_generate(
+            model, tokenizer, prompts, MAX_NEW_TOKENS, stage_size=5, max_batch_size=2
+        )
+
+        assert any(len(s) > 5 for s in staged), "test did not exercise a carry boundary"
+        for i, prompt in enumerate(prompts):
+            hf = _hf_generate_greedy(model, tokenizer, prompt, MAX_NEW_TOKENS)
+            assert staged[i] == single[i] == hf, (
+                f"Prompt {i} staged mismatch:\n  staged: {staged[i]}\n  single: {single[i]}\n  hf:     {hf}"
+            )
+
+    def test_staged_thinking_cap_matches_single_stage(self, model_and_tokenizer):
+        """Thinking-cap state survives a stage boundary: the forced </think> fires at
+        the same absolute position staged vs un-staged, and the exhausted flag carries."""
+        model, tokenizer = model_and_tokenizer
+        prompts = [tokenizer.encode("Hello"), tokenizer.encode("Second prompt here")]
+
+        sentinel = tokenizer.encode("</think>", add_special_tokens=False) or [tokenizer.vocab_size - 1]
+        end_id = sentinel[0]
+        max_thinking = 5  # cap fires at len==5, AFTER the first stage boundary (3)
+        max_new = 12
+
+        gen = BatchGenerator(
+            model=model,
+            tokenizer=tokenizer,
+            max_new_tokens=max_new,
+            max_batch_size=2,
+            max_thinking_tokens=max_thinking,
+            thinking_end_token_id=end_id,
+        )
+        ref = gen.generate(prompts)
+
+        staged, _, staged_te = _staged_generate(
+            model,
+            tokenizer,
+            prompts,
+            max_new,
+            stage_size=3,
+            max_batch_size=2,
+            max_thinking_tokens=max_thinking,
+            thinking_end_token_id=end_id,
+        )
+
+        assert staged == ref.sequences, f"staged {staged} != single {ref.sequences}"
+        assert staged_te == ref.thinking_budget_exhausted
+        for s in staged:
+            # Cap fired (or model emitted end_id) within the thinking budget.
+            assert end_id in s[:max_thinking]
+
+    def test_carry_equal_max_truncates_not_carries(self, model_and_tokenizer):
+        """carry_at_new_tokens == max_new_tokens is the final stage: sequences truncate
+        at the hard budget (never `unfinished`) — guards the `not hit_global` rule."""
+        model, tokenizer = model_and_tokenizer
+        prompt = tokenizer.encode("Hello world")
+        gen = BatchGenerator(model=model, tokenizer=tokenizer, max_new_tokens=MAX_NEW_TOKENS, max_batch_size=1)
+        r = gen.generate([prompt], carry_at_new_tokens=MAX_NEW_TOKENS)
+        assert r.unfinished == [False]
+        assert r.sequences[0] == _hf_generate_greedy(model, tokenizer, prompt, MAX_NEW_TOKENS)
+
+    def test_checkpoint_resume_matches_uninterrupted(self, model_and_tokenizer, tmp_path):
+        """An in-flight checkpoint (done=False) resumes via re-prefill to the same output."""
+        model, tokenizer = model_and_tokenizer
+        prompt = tokenizer.encode("Hello world")
+        max_new = 12
+
+        gen = BatchGenerator(model=model, tokenizer=tokenizer, max_new_tokens=max_new, max_batch_size=1)
+        ref = gen.generate([prompt]).sequences[0]
+
+        ckpt = tmp_path / "resume.ckpt.json"
+        ckpt.write_text(
+            json.dumps(
+                {
+                    "phase": 0,
+                    "rows": {
+                        "0": {
+                            "generated_ids": ref[:4],
+                            "done": False,
+                            "truncated": False,
+                            "thinking_budget_exhausted": False,
+                        }
+                    },
+                }
+            )
+        )
+        gen2 = BatchGenerator(model=model, tokenizer=tokenizer, max_new_tokens=max_new, max_batch_size=1)
+        resumed = gen2.generate([prompt], checkpoint_path=str(ckpt)).sequences[0]
+        assert resumed == ref
+
+    def test_checkpoint_wins_over_seed(self, model_and_tokenizer, tmp_path):
+        """When both a checkpoint row and a stage seed exist, the (newer) checkpoint wins."""
+        model, tokenizer = model_and_tokenizer
+        prompt = tokenizer.encode("Hello world")
+        max_new = 12
+
+        gen = BatchGenerator(model=model, tokenizer=tokenizer, max_new_tokens=max_new, max_batch_size=1)
+        ref = gen.generate([prompt]).sequences[0]
+
+        # Stale seed: correct first token, wrong second — continuing from it would
+        # diverge from ref. Checkpoint holds the true 5-token prefix.
+        stale_seed = [ref[0], (ref[1] + 1) % tokenizer.vocab_size]
+        ckpt = tmp_path / "ck.json"
+        ckpt.write_text(
+            json.dumps(
+                {
+                    "phase": 0,
+                    "rows": {
+                        "0": {
+                            "generated_ids": ref[:5],
+                            "done": False,
+                            "truncated": False,
+                            "thinking_budget_exhausted": False,
+                        }
+                    },
+                }
+            )
+        )
+        gen2 = BatchGenerator(model=model, tokenizer=tokenizer, max_new_tokens=max_new, max_batch_size=1)
+        resumed = gen2.generate([prompt], checkpoint_path=str(ckpt), resume_generated=[stale_seed]).sequences[0]
+        assert resumed == ref, "checkpoint row should override the stale seed"
