@@ -17,9 +17,9 @@ recommended budgets it prints.
 
 # Keyed by model nick (the artifacts/base_models_v0/<nick> directory name).
 PACKING_BUDGETS: dict[str, int] = {
-    "qwen_3b": 0,  # TODO: fill from packing_budget_probe.ipynb
-    "llama_3b": 0,  # TODO: fill from packing_budget_probe.ipynb
-    "phi4_mini": 0,  # TODO: fill from packing_budget_probe.ipynb
+    "qwen_3b": 23960,  # vocab=151936, max_fit_L=26624
+    "llama_3b": 26496,  # vocab=128320, max_fit_L=29440
+    "phi4_mini": 16352,  # vocab=200064, max_fit_L=18176
 }
 
 
