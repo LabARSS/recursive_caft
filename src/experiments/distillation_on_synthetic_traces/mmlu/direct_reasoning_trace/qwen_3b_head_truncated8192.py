@@ -53,7 +53,7 @@ trainer = LoRATrainer(
                 tokenizer=tokenizer,
             )
         ),
-        training_args=LoRATrainingArgs(num_train_epochs=20, per_device_train_batch_size=4),
+        training_args=LoRATrainingArgs(num_train_epochs=20, per_device_train_batch_size=1),
         lora_training_args=LoRASpecificTrainingArgs(train_thinking_token_embeddings=True),
         packing=PackingConfig(budget=packing_budget("qwen_3b")),
         save_schedule=[1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20],
