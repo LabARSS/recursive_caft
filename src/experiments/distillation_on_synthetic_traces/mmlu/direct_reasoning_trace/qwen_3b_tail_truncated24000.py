@@ -11,12 +11,14 @@ from core.evaluation.multi_checkpoint_evaluator import (
     MultiCheckpointEvaluator,
     MultiCheckpointEvaluatorConfig,
 )
+from core.training.base_trainer import PackingConfig
 from core.training.lora_trainer import (
     LoRASpecificTrainingArgs,
     LoRATrainer,
     LoRATrainerConfig,
     LoRATrainingArgs,
 )
+from core.training.packing_budgets import packing_budget
 from core.training.thinking_tokens import setup_thinking_tokens
 
 MODEL_NAME = Path(__file__).parent.joinpath("../../../../../artifacts/base_models_v0/qwen_3b").as_posix()
@@ -43,7 +45,7 @@ trainer = LoRATrainer(
                 config=QADatasetConfig(
                     path=Path(__file__)
                     .parent.joinpath(
-                        "../../../../../data/out/splits/random/mmlu/train_distilled_deepseek_v4_flash_regenerateew exps_incorrect_w_large_tail_truncated24000.parquet"
+                        "../../../../../data/out/splits/random/mmlu/train_distilled_deepseek_v4_flash_regenerate_incorrect_w_large_tail_truncated24000.parquet"
                     )
                     .as_posix(),
                     dataset_id="train_distilled_deepseek_v4_flash_regenerate_incorrect_w_large_tail_truncated24000",
@@ -53,6 +55,7 @@ trainer = LoRATrainer(
         ),
         training_args=LoRATrainingArgs(num_train_epochs=20, per_device_train_batch_size=2),
         lora_training_args=LoRASpecificTrainingArgs(train_thinking_token_embeddings=True),
+        packing=PackingConfig(budget=packing_budget("qwen_3b")),
         save_schedule=[1, 3, 5, 10, 15, 20],
     ),
     tokenizer=tokenizer,

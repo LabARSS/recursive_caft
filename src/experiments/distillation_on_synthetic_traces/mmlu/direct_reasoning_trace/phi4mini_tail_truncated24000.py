@@ -11,6 +11,7 @@ from core.evaluation.multi_checkpoint_evaluator import (
     MultiCheckpointEvaluator,
     MultiCheckpointEvaluatorConfig,
 )
+from core.training.base_trainer import PackingConfig
 from core.training.lora_trainer import (
     LoRASpecificTrainingArgs,
     LoRATrainer,
@@ -18,6 +19,7 @@ from core.training.lora_trainer import (
     LoRATrainingArgs,
     phi4_mini_lora_target_modules,
 )
+from core.training.packing_budgets import packing_budget
 from core.training.thinking_tokens import setup_thinking_tokens
 
 MODEL_NAME = Path(__file__).parent.joinpath("../../../../../artifacts/base_models_v0/phi4_mini").as_posix()
@@ -56,6 +58,7 @@ trainer = LoRATrainer(
         lora_training_args=LoRASpecificTrainingArgs(
             train_thinking_token_embeddings=True, target_modules=phi4_mini_lora_target_modules
         ),
+        packing=PackingConfig(budget=packing_budget("phi4_mini")),
         save_schedule=[1, 3, 5, 10, 15, 20],
     ),
     tokenizer=tokenizer,
