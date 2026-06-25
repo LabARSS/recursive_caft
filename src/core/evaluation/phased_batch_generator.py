@@ -32,6 +32,28 @@ def _malloc_trim() -> None:
         pass
 
 
+def _empty_pinned_host_cache() -> None:
+    """Release the pinned (page-locked) host caching allocator's free pool back to the OS.
+
+    glibc's malloc_trim cannot touch pinned memory — it's managed by PyTorch's CUDA host
+    allocator (cudaHostAlloc), whose freed blocks are pooled, not returned. Our variable-sized
+    KV staging makes that pool inflate well past the live set, which is the bulk of the gap
+    between tracked KV (ram_kv) and process RSS. Emptying only drops *free* blocks; blocks
+    still owned by live staged tensors are retained, so this is safe to call at phase edges.
+
+    No-op on CPU-only builds or older torch where the symbol is absent.
+    """
+    if not torch.cuda.is_available():
+        return
+    try:
+        torch.cuda.memory._host_allocator().empty_cache()
+    except Exception:
+        try:
+            torch._C._host_emptyCache()  # alternate binding name across torch builds
+        except Exception:
+            pass
+
+
 def _pin_glibc_mmap_threshold() -> None:
     """Pin glibc's M_MMAP_THRESHOLD low and disable adaptive growth.
 
@@ -767,6 +789,7 @@ class BatchGenerator:
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
                 _malloc_trim()
+                _empty_pinned_host_cache()
                 logger.trace(
                     f"[trace] phase_end phase={phase + 1} promoted={len(promote_queue)} "
                     f"{_mem_snapshot(staged_slots=len(promote_queue))}"
@@ -944,6 +967,7 @@ class BatchGenerator:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             _malloc_trim()
+            _empty_pinned_host_cache()
 
         logger.info(f"[phase] Effective batch size: {self._effective_batch_size}")
 
