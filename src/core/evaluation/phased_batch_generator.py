@@ -32,6 +32,11 @@ def _malloc_trim() -> None:
         pass
 
 
+# Resolved once on first call: the torch entry point that releases the pinned host caching
+# allocator's free pool. "unresolved" until first lookup, then a callable or None.
+_HOST_EMPTY_CACHE = "unresolved"
+
+
 def _empty_pinned_host_cache() -> None:
     """Release the pinned (page-locked) host caching allocator's free pool back to the OS.
 
@@ -39,17 +44,33 @@ def _empty_pinned_host_cache() -> None:
     allocator (cudaHostAlloc), whose freed blocks are pooled, not returned. Our variable-sized
     KV staging makes that pool inflate well past the live set, which is the bulk of the gap
     between tracked KV (ram_kv) and process RSS. Emptying only drops *free* blocks; blocks
-    still owned by live staged tensors are retained, so this is safe to call at phase edges.
+    still owned by live staged tensors are retained, so this is safe to call between chunks.
 
-    No-op on CPU-only builds or older torch where the symbol is absent.
+    Resolves the torch symbol once and logs which one (or warns if none), so a build without
+    the binding is a visible warning rather than a silent no-op. No-op on CPU-only builds.
     """
+    global _HOST_EMPTY_CACHE
     if not torch.cuda.is_available():
         return
-    try:
-        torch.cuda.memory._host_allocator().empty_cache()
-    except Exception:
+    if _HOST_EMPTY_CACHE == "unresolved":
+        fn = None
         try:
-            torch._C._host_emptyCache()  # alternate binding name across torch builds
+            fn = getattr(torch.cuda.memory._host_allocator(), "empty_cache", None)
+        except Exception:
+            fn = None
+        if fn is None:
+            fn = getattr(torch._C, "_host_emptyCache", None)
+        _HOST_EMPTY_CACHE = fn
+        if fn is None:
+            logger.warning(
+                "[kv-store] no pinned-host empty_cache symbol found; pinned free pool will "
+                "NOT be reclaimed (consider the bounce-buffer fallback)"
+            )
+        else:
+            logger.info(f"[kv-store] pinned-host release via {getattr(fn, '__qualname__', fn)}")
+    if _HOST_EMPTY_CACHE is not None:
+        try:
+            _HOST_EMPTY_CACHE()
         except Exception:
             pass
 
@@ -1010,6 +1031,12 @@ class BatchGenerator:
 
             if not chunk_slots:
                 continue
+
+            # Reclaim the pinned buffers freed by this chunk's restores before the long decode,
+            # so the pinned free pool never accumulates across chunks (the gap between ram_kv
+            # and RSS). Each restore rebinds keys/vals, so all but the last slot's buffers are
+            # already unreferenced here; the last frees on the next chunk's restore.
+            _empty_pinned_host_cache()
 
             # Compute batch-level phase budget
             max_valid_len = max(self._valid_lens[i] for i in range(len(chunk_slots)))
