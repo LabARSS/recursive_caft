@@ -208,6 +208,9 @@ class EstimateComplexityCallback(TrainerCallback):
                 min_healthy_s=float(os.environ.get("COMPLEXITY_MIN_HEALTHY_S", "120")),
                 max_fast=int(os.environ.get("COMPLEXITY_MAX_FAST_FAILURES", "3")),
                 max_attempts=int(os.environ.get("COMPLEXITY_MAX_UNIT_ATTEMPTS", "50")),
+                mem_watchdog_frac=float(os.environ.get("COMPLEXITY_MEM_WATCHDOG_FRAC", "0.92")),
+                mem_poll_interval_s=float(os.environ.get("COMPLEXITY_MEM_WATCHDOG_INTERVAL_S", "2")),
+                max_mem_kills=int(os.environ.get("COMPLEXITY_MEM_MAX_KILLS", "3")),
             )
         finally:
             if offload:

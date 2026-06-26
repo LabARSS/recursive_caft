@@ -83,6 +83,113 @@ def test_interrupt_terminates_group_and_reraises(monkeypatch):
     assert terminated == [4242]
 
 
+class _FakeAlive:
+    """A worker that never exits on its own: wait() always times out."""
+
+    def __init__(self, *a, **k):
+        self.pid = 777
+        self._code = None
+
+    def poll(self):
+        return self._code
+
+    def wait(self, timeout=None):
+        if self._code is not None:
+            return self._code
+        raise sup.subprocess.TimeoutExpired(cmd="x", timeout=timeout)
+
+
+def test_mem_watchdog_kills_over_ceiling_and_bounds(monkeypatch):
+    # RSS over the ceiling → parent kills the worker; recurring kills abort after
+    # max_mem_kills (an over-budget unit, not transient infra).
+    kills = []
+
+    def _fake_terminate(proc, **k):
+        proc._code = -9  # SIGKILL
+        kills.append(proc.pid)
+
+    monkeypatch.setattr(sup.subprocess, "Popen", _FakeAlive)
+    monkeypatch.setattr(sup, "terminate_process_group", _fake_terminate)
+    monkeypatch.setattr(sup, "_request_child_stackdump", lambda proc, **k: None)
+    monkeypatch.setattr(sup, "read_cgroup_mem_limit", lambda: 100)
+    monkeypatch.setattr(sup, "process_tree_rss", lambda pid: 95)  # >= 0.92 * 100
+
+    with pytest.raises(RuntimeError, match="memory-limit kills"):
+        supervise_unit(
+            ["x"], {}, label="mem", min_healthy_s=0.0, max_fast=3, max_attempts=50,
+            mem_watchdog_frac=0.92, mem_poll_interval_s=0.0, max_mem_kills=3,
+        )
+    assert len(kills) == 3  # bounded by max_mem_kills, not max_attempts
+
+
+def test_mem_watchdog_lets_healthy_worker_finish(monkeypatch):
+    # Under the ceiling → watchdog never fires; a clean exit returns as normal.
+    class _FakeOk:
+        def __init__(self, *a, **k):
+            self.pid = 1
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(sup.subprocess, "Popen", _FakeOk)
+    monkeypatch.setattr(sup, "read_cgroup_mem_limit", lambda: 100)
+    monkeypatch.setattr(sup, "process_tree_rss", lambda pid: 1)
+    supervise_unit(
+        ["x"], {}, label="ok", min_healthy_s=0.0, max_fast=3, max_attempts=2,
+        mem_watchdog_frac=0.92, mem_poll_interval_s=0.0, max_mem_kills=3,
+    )
+
+
+def test_self_watchdog_exit_code_counts_as_mem_kill(monkeypatch):
+    # Worker exited via its own in-process watchdog (MEM_WATCHDOG_EXIT_CODE); even
+    # with the parent watchdog off, the parent classifies it as a memory kill and
+    # bounds it rather than treating it as a generic crash.
+    class _FakeExit:
+        def __init__(self, *a, **k):
+            self.pid = 1
+
+        def poll(self):
+            return sup.MEM_WATCHDOG_EXIT_CODE
+
+        def wait(self, timeout=None):
+            return sup.MEM_WATCHDOG_EXIT_CODE
+
+    monkeypatch.setattr(sup.subprocess, "Popen", _FakeExit)
+    with pytest.raises(RuntimeError, match="memory-limit kills"):
+        supervise_unit(
+            ["x"], {}, label="self", min_healthy_s=0.0, max_fast=3, max_attempts=50,
+            mem_watchdog_frac=0.0, max_mem_kills=2,
+        )
+
+
+def test_mem_watchdog_off_without_cgroup_limit(monkeypatch):
+    # No container limit detected → plain blocking wait, watchdog never consulted.
+    polled = []
+
+    class _FakeOk:
+        def __init__(self, *a, **k):
+            self.pid = 1
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            assert timeout is None  # blocking wait, not the poll loop
+            return 0
+
+    monkeypatch.setattr(sup.subprocess, "Popen", _FakeOk)
+    monkeypatch.setattr(sup, "read_cgroup_mem_limit", lambda: None)
+    monkeypatch.setattr(sup, "process_tree_rss", lambda pid: polled.append(pid) or 0)
+    supervise_unit(
+        ["x"], {}, label="nolimit", min_healthy_s=0.0, max_fast=3, max_attempts=2,
+        mem_watchdog_frac=0.92, mem_poll_interval_s=0.0, max_mem_kills=3,
+    )
+    assert polled == []  # never polled RSS
+
+
 def test_passes_env_and_session_to_popen(monkeypatch):
     seen = {}
 

@@ -15,13 +15,18 @@ emitted by logger.py is itself the signal that the OS OOM-killer struck.
 from __future__ import annotations
 
 import faulthandler
+import os
 import signal
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
+import psutil
+
 from core.utils.logger import LOG_DIR, RUN_BASENAME, logger
+from core.utils.memory_limit import MEM_WATCHDOG_EXIT_CODE, read_cgroup_mem_limit
 
 
 def _git_sha() -> str:
@@ -105,7 +110,72 @@ for _sig_name in ("SIGTERM", "SIGABRT", "SIGHUP"):
         except (OSError, ValueError):
             pass
 
+
+def _start_mem_watchdog() -> bool:
+    """In-process backstop: self-terminate before the container RAM limit wedges us.
+
+    A daemon thread samples this process's RSS against the detected cgroup limit
+    and, on breach, dumps all-thread stacks (so we know *where*) then os._exit()s
+    with MEM_WATCHDOG_EXIT_CODE — a clean death instead of the uninterruptible
+    kernel-reclaim hang that ignores Ctrl-C and SIGKILL.
+
+    Defence-in-depth: the parent supervisor's watchdog (subprocess_supervision) is
+    the hard guarantee and fires first (lower fraction); this covers the
+    in-process / unsupervised path and adds an internal stack dump. Caveat: a
+    Python thread cannot preempt a GIL-holding C malloc stall, so it relies on the
+    approach to the limit being gradual (it is — minutes in practice) while the
+    process is still responsive. No-op when disabled or no container limit exists.
+    """
+    if os.environ.get("EVAL_MEM_WATCHDOG", "1") == "0":
+        return False
+    frac = float(os.environ.get("EVAL_MEM_WATCHDOG_SELF_FRAC", "0.95"))
+    interval = float(os.environ.get("EVAL_MEM_WATCHDOG_INTERVAL_S", "2"))
+    if frac <= 0:
+        return False
+    limit = read_cgroup_mem_limit()
+    if limit is None:
+        return False  # bare metal / dev host — nothing to guard against
+    ceiling = limit * frac
+    proc = psutil.Process()
+
+    def _loop() -> None:
+        while True:
+            time.sleep(interval)
+            try:
+                rss = proc.memory_info().rss
+            except Exception:
+                continue
+            if rss < ceiling:
+                continue
+            msg = (
+                f"[trace] MEM WATCHDOG: RSS {rss / 1e9:.1f}GB >= {frac:.2f}×"
+                f"{limit / 1e9:.0f}GB container limit — self-terminating before the "
+                f"cgroup wedges this process (would ignore Ctrl-C and SIGKILL)."
+            )
+            try:
+                logger.error(msg)
+            except Exception:
+                pass
+            try:
+                faulthandler.dump_traceback(all_threads=True, file=_faults_fp)
+                _faults_fp.flush()
+            except Exception:
+                pass
+            try:
+                sys.stderr.write(msg + "\n")
+                sys.stderr.flush()
+            except Exception:
+                pass
+            os._exit(MEM_WATCHDOG_EXIT_CODE)
+
+    threading.Thread(target=_loop, name="mem-watchdog", daemon=True).start()
+    return True
+
+
+_mem_watchdog_on = _start_mem_watchdog()
+
 logger.info(
-    f"[trace] runtime_trace installed (faulthandler, excepthook, signal handlers); "
+    f"[trace] runtime_trace installed (faulthandler, excepthook, signal handlers, "
+    f"mem_watchdog={'on' if _mem_watchdog_on else 'off'}); "
     f"git_sha={_git_sha()} faults_file={_FAULTS_FILE}"
 )

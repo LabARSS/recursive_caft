@@ -22,6 +22,7 @@ from core.datasets.qa_dataset_adapter import QADatasetAdapter
 from core.evaluation.phased_batch_generator import BatchGenerator, _malloc_trim
 from core.utils.device import DEVICE_MAP
 from core.utils.logger import logger
+from core.utils.memory_limit import read_cgroup_mem_limit
 from core.utils.subprocess_supervision import supervise_unit
 
 # BatchGenerator.generate() prefills every prompt upfront and stages each KV
@@ -173,6 +174,9 @@ class Evaluator:
             min_healthy_s=float(os.environ.get("EVAL_MIN_HEALTHY_S", "120")),
             max_fast=int(os.environ.get("EVAL_MAX_FAST_FAILURES", "3")),
             max_attempts=int(os.environ.get("EVAL_MAX_UNIT_ATTEMPTS", "50")),
+            mem_watchdog_frac=float(os.environ.get("EVAL_MEM_WATCHDOG_FRAC", "0.92")),
+            mem_poll_interval_s=float(os.environ.get("EVAL_MEM_WATCHDOG_INTERVAL_S", "2")),
+            max_mem_kills=int(os.environ.get("EVAL_MEM_MAX_KILLS", "3")),
         )
 
     def _evaluate_single(self, eval_dataset: QADatasetAdapter, model, tokenizer) -> EvaluationResult:
@@ -182,6 +186,12 @@ class Evaluator:
         total = len(prompts)
         logger.info(
             f"Evaluating {total} samples with model from {self.config.model_path} for dataset {eval_dataset.dataset.dataset_id}..."
+        )
+        mem_limit = read_cgroup_mem_limit()
+        rss_gb = psutil.Process().memory_info().rss / 1e9
+        logger.info(
+            f"Container RAM limit: {f'{mem_limit / 1e9:.0f}GB' if mem_limit is not None else 'none detected (host RAM)'}"
+            f" (current RSS {rss_gb:.1f}GB)"
         )
 
         qa_dataset: QADataset = eval_dataset.dataset
