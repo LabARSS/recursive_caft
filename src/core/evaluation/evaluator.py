@@ -30,8 +30,8 @@ from core.utils.subprocess_supervision import supervise_unit
 # Phi-4-mini that's ~200GB of staged KV and the container gets OOM-killed.
 # Chunking the prompt list bounds peak CPU RAM to one chunk's staging queue.
 
-# A bit more than 1/6 of MMLU test
-CHUNK_SIZE = 410
+# A bit more than 1/8 of MMLU test
+CHUNK_SIZE = 320
 
 
 # --- Per-unit crash isolation ------------------------------------------------
