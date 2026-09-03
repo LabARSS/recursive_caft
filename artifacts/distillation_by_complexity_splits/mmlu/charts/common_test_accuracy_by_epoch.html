@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Common test: accuracy by epoch</title>
+<style>
+  :root{--bg:#f7f4ee;--ink:#1a2a44;--line:rgba(26,42,68,.14);--mut:#6b7385;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;line-height:1.5}
+  .wrap{max-width:1080px;margin:0 auto;padding:36px 40px 60px}
+  h1{font-family:Georgia,"Times New Roman",serif;font-weight:500;font-size:28px;margin:0 0 18px;letter-spacing:-.01em}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 14px 10px;background:#fffdf8;margin-top:16px}
+  .card .ct{font-size:13px;font-family:IBM Plex Mono,monospace;color:var(--mut);margin:2px 6px 6px}
+  .legend{display:flex;flex-wrap:wrap;gap:16px;margin:12px 2px 0;font-size:12.5px;font-family:IBM Plex Mono,monospace}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .legend i{width:20px;height:0;border-top-width:3px;display:inline-block}
+  .small{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-top:14px}
+  .small .card{margin-top:0}
+  @media(max-width:900px){.small{grid-template-columns:1fr}}
+  nav{font-size:13px;font-family:IBM Plex Mono,monospace;margin:0 0 10px}
+  nav a{color:#2a6fdb;text-decoration:none}nav a:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav><a href="index.html">index</a> · <a href="common_test_best_epoch.html">Common test: best epoch per training bin</a> · <a href="in_bin_accuracy_by_epoch.html">In-bin test: accuracy by epoch</a> · <a href="best_epoch_accuracy_vs_bin.html">Best-epoch accuracy vs complexity bin</a> · <a href="training_gain_by_bin.html">Training gain by bin</a> · <a href="generation_cap.html">Generation cap: cap4096 vs cap2048</a> · <a href="training_bin_transfer.html">Training bin: own-bin gain vs transfer (balanced600)</a> · <a href="training_bin_ranking.html">Training bin ranking (common tests)</a> · <a href="best_bin_vs_random.html">Best bin vs random baselines (random600)</a></nav>
+<h1>Common test: accuracy by epoch</h1>
+<div class="card"><div class="ct">random600 · accuracy by epoch (colour = training bin)</div><div id="cd1"></div></div>
+<div class="card"><div class="ct">balanced600 (mean of the six probe bins) · accuracy by epoch (colour = training bin)</div><div id="cd1b"></div></div>
+</div>
+<script src="common.js"></script>
+<script>
+epochPanel(CR_L,'cd1','Llama-3B · random600',.28,.45,TK_LQ,0,RB_L.rand);
+epochPanel(CR_Q,'cd1','Qwen2.5-3B · random600',.28,.45,TK_LQ,0,RB_Q.rand);
+epochPanel(CR_P,'cd1','Phi-4-mini · random600',0,.45,TK_P0,1);
+epochPanel(CB_L,'cd1b','Llama-3B · balanced600',.28,.45,TK_LQ,0,RB_L.bal);
+epochPanel(CB_Q,'cd1b','Qwen2.5-3B · balanced600',.28,.45,TK_LQ,0,RB_Q.bal);
+epochPanel(CB_P,'cd1b','Phi-4-mini · balanced600',0,.45,TK_P0,1);
+</script>
+</body></html>

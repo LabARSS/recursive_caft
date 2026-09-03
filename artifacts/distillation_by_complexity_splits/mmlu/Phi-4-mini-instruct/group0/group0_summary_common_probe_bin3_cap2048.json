@@ -1,0 +1,44 @@
+{
+  "group0_common_probe_bin3_cap2048": [
+    {
+      "epoch": 5.0,
+      "checkpoint": "checkpoint-125",
+      "accuracy": 0.0,
+      "total": 100,
+      "correct": 0,
+      "num_truncated": 31
+    },
+    {
+      "epoch": 10.0,
+      "checkpoint": "checkpoint-250",
+      "accuracy": 0.13,
+      "total": 100,
+      "correct": 13,
+      "num_truncated": 18
+    },
+    {
+      "epoch": 20.0,
+      "checkpoint": "checkpoint-500",
+      "accuracy": 0.21,
+      "total": 100,
+      "correct": 21,
+      "num_truncated": 3
+    },
+    {
+      "epoch": 35.0,
+      "checkpoint": "checkpoint-875",
+      "accuracy": 0.15,
+      "total": 100,
+      "correct": 15,
+      "num_truncated": 4
+    },
+    {
+      "epoch": 50.0,
+      "checkpoint": "checkpoint-1250",
+      "accuracy": 0.15,
+      "total": 100,
+      "correct": 15,
+      "num_truncated": 5
+    }
+  ]
+}

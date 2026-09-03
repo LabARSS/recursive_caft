@@ -19,5 +19,8 @@ artifacts/**
 !artifacts/**/summary_reasoning_evals*.json
 !artifacts/**/summary_cot*.json
 !artifacts/**/summary_single_token*.json
+!artifacts/**/*summary_common*.json
+!artifacts/distillation_by_complexity_splits/**/charts/*.html
+!artifacts/distillation_by_complexity_splits/**/charts/*.js
 !artifacts/**/resampling_trainer_data/**/estimation_stats.json
 !artifacts/**/resampling_trainer_data/**/*.parquet

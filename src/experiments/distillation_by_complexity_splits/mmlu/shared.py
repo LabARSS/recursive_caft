@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from transformers import AutoTokenizer
@@ -24,9 +25,37 @@ from core.training.thinking_tokens import setup_thinking_tokens
 from core.utils.datasets import merge_mmlu_on_question_id, truncate_column
 from core.utils.logger import logger
 
+ROOT = Path(__file__).parent.joinpath("../../../..")
 
-def run(model_name: str, save_schedule: list[int] = [5, 10, 20, 35, 50], max_thinking_tokens: list[int] = [2048, 4096]):
-    MODEL_NAME = Path(__file__).parent.joinpath(f"../../../../artifacts/base_models_v0/{model_name}").as_posix()
+# `model_name` names the artifacts/ output dir (and the model dir under BASE_MODELS_DIR);
+# the nick is the repo-wide key: artifacts/base_models_v0/<nick>, data/out/splits/.../<nick>,
+# packing budgets.
+MODEL_NICKS = {
+    "Qwen2.5-3B-Instruct": "qwen_3b",
+    "Phi-4-mini-instruct": "phi4_mini",
+    "llama_3b": "llama_3b",
+}
+
+
+def model_nick(model_name: str) -> str:
+    return MODEL_NICKS.get(model_name, model_name)
+
+
+def base_model_path(model_name: str) -> str:
+    """$BASE_MODELS_DIR/<model_name> if the env var is set (e.g. /mnt/data198/LLM/agents),
+    otherwise the repo's artifacts/base_models_v0/<nick>."""
+    base = os.environ.get("BASE_MODELS_DIR")
+    if base:
+        return Path(base).joinpath(model_name).as_posix()
+    return ROOT.joinpath(f"artifacts/base_models_v0/{model_nick(model_name)}").as_posix()
+
+
+def splits_dir(model_name: str) -> Path:
+    return ROOT.joinpath(f"data/out/splits/single_token_entropy/mmlu/{model_nick(model_name)}")
+
+
+def run(model_name: str, save_schedule: list[int] = [5, 10, 20, 35, 50], max_thinking_tokens: list[int] = [2048]):
+    MODEL_NAME = base_model_path(model_name)
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
     if tokenizer.pad_token is None:
@@ -34,7 +63,7 @@ def run(model_name: str, save_schedule: list[int] = [5, 10, 20, 35, 50], max_thi
     setup_thinking_tokens(tokenizer)
 
     lora_training_args = LoRASpecificTrainingArgs(train_thinking_token_embeddings=True)
-    if model_name == "phi4_mini":
+    if model_nick(model_name) == "phi4_mini":
         lora_training_args.target_modules = phi4_mini_lora_target_modules
 
     OUT_PATHS = [
@@ -51,9 +80,7 @@ def run(model_name: str, save_schedule: list[int] = [5, 10, 20, 35, 50], max_thi
             f"train_{group}_distilled_deepseek_v4_flash_regenerate_incorrect_w_large.parquet"
         )
         merge_mmlu_on_question_id(
-            main_path=Path(__file__).parent.joinpath(
-                f"../../../../data/out/splits/single_token_entropy/mmlu/{model_name}/group{group}_train.parquet"
-            ),
+            main_path=splits_dir(model_name).joinpath(f"group{group}_train.parquet"),
             extra_paths=[
                 Path(__file__).parent.joinpath(
                     "../../../../data/out/distillation/mmlu_distilled_deepseek_v4_flash_regenerate_incorrect_w_large.parquet"
@@ -85,7 +112,7 @@ def run(model_name: str, save_schedule: list[int] = [5, 10, 20, 35, 50], max_thi
                 ),
                 training_args=LoRATrainingArgs(num_train_epochs=save_schedule[-1], per_device_train_batch_size=1),
                 lora_training_args=lora_training_args,
-                packing=PackingConfig(budget=packing_budget(model_name)),
+                packing=PackingConfig(budget=packing_budget(model_nick(model_name))),
                 save_schedule=save_schedule,
             ),
             tokenizer=tokenizer,
@@ -106,11 +133,7 @@ def run(model_name: str, save_schedule: list[int] = [5, 10, 20, 35, 50], max_thi
                     eval_dataset=QADatasetAdapter(
                         dataset=MMLUReasoningResponseDataset(
                             config=QADatasetConfig(
-                                path=Path(__file__)
-                                .parent.joinpath(
-                                    f"../../../../data/out/splits/single_token_entropy/mmlu/{model_name}/group{group}_test.parquet"
-                                )
-                                .as_posix(),
+                                path=splits_dir(model_name).joinpath(f"group{group}_test.parquet").as_posix(),
                                 dataset_id=eval_dataset_id,
                             ),
                             tokenizer=tokenizer,

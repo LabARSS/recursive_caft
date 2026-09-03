@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Training bin: own-bin gain vs transfer (balanced600)</title>
+<style>
+  :root{--bg:#f7f4ee;--ink:#1a2a44;--line:rgba(26,42,68,.14);--mut:#6b7385;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;line-height:1.5}
+  .wrap{max-width:1080px;margin:0 auto;padding:36px 40px 60px}
+  h1{font-family:Georgia,"Times New Roman",serif;font-weight:500;font-size:28px;margin:0 0 18px;letter-spacing:-.01em}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 14px 10px;background:#fffdf8;margin-top:16px}
+  .card .ct{font-size:13px;font-family:IBM Plex Mono,monospace;color:var(--mut);margin:2px 6px 6px}
+  .legend{display:flex;flex-wrap:wrap;gap:16px;margin:12px 2px 0;font-size:12.5px;font-family:IBM Plex Mono,monospace}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .legend i{width:20px;height:0;border-top-width:3px;display:inline-block}
+  .small{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-top:14px}
+  .small .card{margin-top:0}
+  @media(max-width:900px){.small{grid-template-columns:1fr}}
+  nav{font-size:13px;font-family:IBM Plex Mono,monospace;margin:0 0 10px}
+  nav a{color:#2a6fdb;text-decoration:none}nav a:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav><a href="index.html">index</a> · <a href="common_test_accuracy_by_epoch.html">Common test: accuracy by epoch</a> · <a href="common_test_best_epoch.html">Common test: best epoch per training bin</a> · <a href="in_bin_accuracy_by_epoch.html">In-bin test: accuracy by epoch</a> · <a href="best_epoch_accuracy_vs_bin.html">Best-epoch accuracy vs complexity bin</a> · <a href="training_gain_by_bin.html">Training gain by bin</a> · <a href="generation_cap.html">Generation cap: cap4096 vs cap2048</a> · <a href="training_bin_ranking.html">Training bin ranking (common tests)</a> · <a href="best_bin_vs_random.html">Best bin vs random baselines (random600)</a></nav>
+<h1>Training bin: own-bin gain vs transfer (balanced600)</h1>
+<div class="card"><div class="ct">balanced600 · gain on own bin and transfer to the other bins (relative to the mean over all training groups)</div><div id="cd2"></div></div>
+</div>
+<script src="common.js"></script>
+<script>
+(function(){
+  const split=M=>{const cm=[0,1,2,3,4,5].map(b=>M.reduce((a,r)=>a+r[b],0)/6);
+    return [0,1,2,3,4,5].map(g=>{let s=0,n=0;for(let b=0;b<6;b++)if(b!==g){s+=M[g][b]-cm[b];n++}
+      return{own:(M[g][g]-cm[g])*100,oth:s/n*100}})};
+  const COWN='#2a6fdb',COTH='#d4a017';
+  [['Llama-3B',TM_L],['Qwen2.5-3B',TM_Q],['Phi-4-mini',TM_P]].forEach(([nm,M])=>{
+    const D2=split(M),w=1000,h=340,L=88,R=940,T0=40,B=262;const s=svg(w,h);
+    txt(s,L-8,22,nm,{a:'start',w:600,fs:13.5,f:'#1a2a44'});
+    const lo=-7,hi=6.5,Y=v=>B-(v-lo)/(hi-lo)*(B-T0);
+    [-6,-4,-2,0,2,4,6].forEach(v=>{s.appendChild(el('line',{x1:L,y1:Y(v),x2:R,y2:Y(v),stroke:v===0?'#1a2a44':'rgba(26,42,68,.07)','stroke-width':v===0?1.4:1}));txt(s,L-10,Y(v)+4,(v>0?'+':'')+v,{a:'end'})});
+    (function(){const yy=(T0+B)/2,e=el('text',{x:30,y:yy,'font-size':11,fill:'#6b7385','text-anchor':'middle','font-family':'IBM Plex Mono,monospace',transform:'rotate(-90 30 '+yy+')'});e.textContent='better / worse than mean, pp';s.appendChild(e)})();
+    const bw=38,gap=10,gw=(R-L)/6;
+    for(let g=0;g<6;g++){const cx=L+g*gw+gw/2,x0=cx-(2*bw+gap)/2;
+      [['own bin',D2[g].own,COWN,0],['other bins',D2[g].oth,COTH,1]].forEach(([lab,v,c,i])=>{
+        const x=x0+i*(bw+gap),y0=Y(0),y=Y(v),gg=el('g',{});
+        gg.appendChild(el('rect',{x,y:Math.min(y0,y),width:bw,height:Math.max(Math.abs(y-y0),2),fill:c,rx:3}));
+        tipOn(gg,'<b>'+nm+' · trained on bin '+g+'</b><br>'+lab+': '+(v>=0?'+':'')+v.toFixed(1)+' pp');
+        const lv=Math.abs(v)<.05?0:v;
+        txt(gg,x+bw/2,v>=0?y-8:y+17,(lv>=0?'+':'')+lv.toFixed(1),{f:c,w:600,fs:11.5});
+        s.appendChild(gg);});
+      txt(s,cx,B+20,'bin '+g,{w:600});}
+    txt(s,(L+R)/2,B+42,'training bin');
+    if(nm[0]==='L'){s.appendChild(el('rect',{x:L,y:h-22,width:12,height:12,fill:COWN,rx:2}));txt(s,L+18,h-12,'gain on own bin',{a:'start'});
+      s.appendChild(el('rect',{x:L+232,y:h-22,width:12,height:12,fill:COTH,rx:2}));txt(s,L+250,h-12,'transfer to the other five bins',{a:'start'});}
+    document.getElementById('cd2').appendChild(s);});
+})();
+</script>
+</body></html>

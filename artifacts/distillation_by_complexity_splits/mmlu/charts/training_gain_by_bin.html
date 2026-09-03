@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Training gain by bin</title>
+<style>
+  :root{--bg:#f7f4ee;--ink:#1a2a44;--line:rgba(26,42,68,.14);--mut:#6b7385;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;line-height:1.5}
+  .wrap{max-width:1080px;margin:0 auto;padding:36px 40px 60px}
+  h1{font-family:Georgia,"Times New Roman",serif;font-weight:500;font-size:28px;margin:0 0 18px;letter-spacing:-.01em}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 14px 10px;background:#fffdf8;margin-top:16px}
+  .card .ct{font-size:13px;font-family:IBM Plex Mono,monospace;color:var(--mut);margin:2px 6px 6px}
+  .legend{display:flex;flex-wrap:wrap;gap:16px;margin:12px 2px 0;font-size:12.5px;font-family:IBM Plex Mono,monospace}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .legend i{width:20px;height:0;border-top-width:3px;display:inline-block}
+  .small{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-top:14px}
+  .small .card{margin-top:0}
+  @media(max-width:900px){.small{grid-template-columns:1fr}}
+  nav{font-size:13px;font-family:IBM Plex Mono,monospace;margin:0 0 10px}
+  nav a{color:#2a6fdb;text-decoration:none}nav a:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav><a href="index.html">index</a> · <a href="common_test_accuracy_by_epoch.html">Common test: accuracy by epoch</a> · <a href="common_test_best_epoch.html">Common test: best epoch per training bin</a> · <a href="in_bin_accuracy_by_epoch.html">In-bin test: accuracy by epoch</a> · <a href="best_epoch_accuracy_vs_bin.html">Best-epoch accuracy vs complexity bin</a> · <a href="generation_cap.html">Generation cap: cap4096 vs cap2048</a> · <a href="training_bin_transfer.html">Training bin: own-bin gain vs transfer (balanced600)</a> · <a href="training_bin_ranking.html">Training bin ranking (common tests)</a> · <a href="best_bin_vs_random.html">Best bin vs random baselines (random600)</a></nav>
+<h1>Training gain by bin</h1>
+<div class="card"><div class="ct">training gain · best epoch − epoch 10, pp (in-bin test)</div><div id="c2a"></div></div>
+<div class="card"><div class="ct">difficulty (X: best in-bin accuracy) × training gain (Y: pp)</div><div id="c2b"></div></div>
+</div>
+<script src="common.js"></script>
+<script>
+(function(){
+  const w=1000,h=300,L=64,R=970,T0=18,B=232;const s=svg(w,h);
+  const Y=v=>B-v/16*(B-T0);
+  s.appendChild(el('line',{x1:L,y1:B,x2:R,y2:B,stroke:'#8b93a1'}));
+  [0,5,10,15].forEach(v=>{s.appendChild(el('line',{x1:L,y1:Y(v),x2:R,y2:Y(v),stroke:'rgba(26,42,68,.08)'}));txt(s,L-7,Y(v)+4,'+'+v,{a:'end'})});
+  const bw=20,gap=6,gw=(R-L)/6;
+  for(let b=0;b<6;b++){const x0=L+b*gw+gw/2-(3*bw+2*gap)/2;
+    [['q',0,'#2a6fdb'],['p',1,'#c2563a'],['l',2,'#0d9488']].forEach(([m,i,c])=>{
+      const d=GAIN[m][b];if(d==null)return;const x=x0+i*(bw+gap);
+      s.appendChild(el('rect',{x,y:Y(d),width:bw,height:Math.max(B-Y(d),1),fill:c,opacity:.9,rx:2}));
+      txt(s,x+bw/2,Y(d)-6,(d>=0?'+':'')+d.toFixed(1),{fs:9.5,f:c,w:600});});
+    txt(s,L+b*gw+gw/2,B+18,'bin '+b);}
+  txt(s,L+2,h-8,'■',{a:'start',fs:12,f:'#2a6fdb'});txt(s,L+14,h-8,'Qwen-3B',{a:'start',fs:11.5});
+  txt(s,L+92,h-8,'■',{a:'start',fs:12,f:'#c2563a'});txt(s,L+104,h-8,'Phi-4-mini',{a:'start',fs:11.5});
+  txt(s,L+196,h-8,'■',{a:'start',fs:12,f:'#0d9488'});txt(s,L+208,h-8,'Llama-3B',{a:'start',fs:11.5});
+  document.getElementById('c2a').appendChild(s);
+})();
+(function(){
+  const w=1000,h=380,L=64,R=960,T0=20,B=300;const s=svg(w,h);
+  const X=v=>L+(v-18)/50*(R-L),Y=v=>B-v/16*(B-T0);
+  s.appendChild(el('rect',{x:X(29),y:T0,width:X(50)-X(29),height:Y(6)-T0,fill:'rgba(13,148,136,.10)'}));
+  txt(s,X(29)+8,T0+16,'working zone: above chance and learns',{a:'start',f:'#0d9488',fs:12,w:600});
+  s.appendChild(el('line',{x1:L,y1:B,x2:R,y2:B,stroke:'#8b93a1'}));
+  s.appendChild(el('line',{x1:L,y1:T0,x2:L,y2:B,stroke:'#8b93a1'}));
+  [20,25,30,40,50,60,65].forEach(v=>{s.appendChild(el('line',{x1:X(v),y1:T0,x2:X(v),y2:B,stroke:'rgba(26,42,68,.07)'}));txt(s,X(v),B+16,v+'%')});
+  [0,5,10,15].forEach(v=>{s.appendChild(el('line',{x1:L,y1:Y(v),x2:R,y2:Y(v),stroke:'rgba(26,42,68,.07)'}));txt(s,L-7,Y(v)+4,'+'+v,{a:'end'})});
+  txt(s,(L+R)/2,B+36,'best in-bin accuracy  →  easier');
+  const items=[];
+  [['q','#2a6fdb','Qwen'],['p','#c2563a','Phi'],['l','#0d9488','Llama']].forEach(([m,c,nm])=>{
+    for(let b=0;b<6;b++){if(ACC[m][b]==null)continue;
+      items.push({x:X(ACC[m][b]),y:Y(GAIN[m][b]),c,lab:nm+' '+b,acc:ACC[m][b],gain:GAIN[m][b]});}});
+  items.forEach(it=>{const g=el('g',{});
+    g.appendChild(el('circle',{cx:it.x,cy:it.y,r:7,fill:it.c,opacity:.85}));
+    const t=el('title',{});t.textContent=it.lab+' · acc '+it.acc.toFixed(1)+'% · gain +'+it.gain.toFixed(1)+' pp';
+    g.appendChild(t);s.appendChild(g);it.g=g;});
+  const boxOf=(x,y,str,fs,anchor)=>{const ww=str.length*fs*.6,x1=anchor==='start'?x:anchor==='end'?x-ww:x-ww/2;
+    return{x1,x2:x1+ww,y1:y-fs*.78,y2:y+fs*.26}};
+  const placed=[boxOf(X(29)+8,T0+16,'working zone: above chance and learns',12,'start'),
+    ...items.map(o=>({x1:o.x-7,x2:o.x+7,y1:o.y-7,y2:o.y+7}))];
+  const over=(u,v)=>u.x1<v.x2&&v.x1<u.x2&&u.y1<v.y2&&v.y1<u.y2;
+  items.slice().sort((u,v)=>u.y-v.y).forEach(it=>{
+    for(const [dx,dy] of [[0,-13],[0,18],[16,4],[-16,4],[0,-25],[0,30],[0,-37],[0,42]]){
+      const cy=it.y+dy;if(cy<T0+10||cy>B-4)continue;
+      const anchor=dx>0?'start':dx<0?'end':'middle';
+      const bx=boxOf(it.x+dx,cy,it.lab,10.5,anchor);
+      if(placed.some(p=>over(bx,p)))continue;
+      placed.push(bx);txt(it.g,it.x+dx,cy,it.lab,{fs:10.5,f:it.c,w:600,a:anchor});return;}
+  });
+  document.getElementById('c2b').appendChild(s);
+})();
+</script>
+</body></html>

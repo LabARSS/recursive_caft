@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Training bin ranking (common tests)</title>
+<style>
+  :root{--bg:#f7f4ee;--ink:#1a2a44;--line:rgba(26,42,68,.14);--mut:#6b7385;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;line-height:1.5}
+  .wrap{max-width:1080px;margin:0 auto;padding:36px 40px 60px}
+  h1{font-family:Georgia,"Times New Roman",serif;font-weight:500;font-size:28px;margin:0 0 18px;letter-spacing:-.01em}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 14px 10px;background:#fffdf8;margin-top:16px}
+  .card .ct{font-size:13px;font-family:IBM Plex Mono,monospace;color:var(--mut);margin:2px 6px 6px}
+  .legend{display:flex;flex-wrap:wrap;gap:16px;margin:12px 2px 0;font-size:12.5px;font-family:IBM Plex Mono,monospace}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .legend i{width:20px;height:0;border-top-width:3px;display:inline-block}
+  .small{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-top:14px}
+  .small .card{margin-top:0}
+  @media(max-width:900px){.small{grid-template-columns:1fr}}
+  nav{font-size:13px;font-family:IBM Plex Mono,monospace;margin:0 0 10px}
+  nav a{color:#2a6fdb;text-decoration:none}nav a:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav><a href="index.html">index</a> · <a href="common_test_accuracy_by_epoch.html">Common test: accuracy by epoch</a> · <a href="common_test_best_epoch.html">Common test: best epoch per training bin</a> · <a href="in_bin_accuracy_by_epoch.html">In-bin test: accuracy by epoch</a> · <a href="best_epoch_accuracy_vs_bin.html">Best-epoch accuracy vs complexity bin</a> · <a href="training_gain_by_bin.html">Training gain by bin</a> · <a href="generation_cap.html">Generation cap: cap4096 vs cap2048</a> · <a href="training_bin_transfer.html">Training bin: own-bin gain vs transfer (balanced600)</a> · <a href="best_bin_vs_random.html">Best bin vs random baselines (random600)</a></nav>
+<h1>Training bin ranking (common tests)</h1>
+<div class="card"><div class="ct">overall ranking: mean rank across 6 measurements (3 models × 2 tests)</div><div id="cf0"></div></div>
+<div class="card"><div class="ct">training-bin advantage vs the model’s cross-bin mean, pp</div><div id="cf1"></div></div>
+</div>
+<script src="common.js"></script>
+<script>
+(function(){
+  const SS=[['Llama · random600',CR_L,0],['Llama · balanced600',CB_L,0],['Qwen · random600',CR_Q,0],
+    ['Qwen · balanced600',CB_Q,0],['Phi · random600',CR_P,1],['Phi · balanced600',CB_P,1]];
+  const ACCS=SS.map(([nm,D,s5])=>({nm,acc:D.map(a=>Math.max(...(s5?a.slice(1):a)))}));
+  const RANKS=ACCS.map(o=>{const order=o.acc.map((v,b)=>({v,b})).sort((x,y)=>y.v-x.v);
+    const r=[];order.forEach((e,i)=>{const tie=order.filter(z=>z.v===e.v);
+      r[e.b]=tie.length>1?(order.indexOf(tie[0])+order.indexOf(tie[tie.length-1])+2)/2:i+1});return{nm:o.nm,acc:o.acc,r}});
+  const AVGR=[0,1,2,3,4,5].map(b=>RANKS.reduce((a,s)=>a+s.r[b],0)/RANKS.length);
+  const order=[0,1,2,3,4,5].sort((a,b)=>AVGR[a]-AVGR[b]);
+
+  // chart 1 — horizontal ranking bars
+  (function(){
+    const w=1000,h2=340,L=112,R=880,T0=26,rowH=46;const s=svg(w,h2);
+    const X=v=>L+(6-v)/5*(R-L);
+    for(let v=1;v<=6;v++){s.appendChild(el('line',{x1:X(v),y1:T0-6,x2:X(v),y2:T0+6*rowH-8,stroke:'rgba(26,42,68,.07)'}));txt(s,X(v),T0-12,'#'+v,{fs:10.5})}
+    order.forEach((b,i)=>{
+      const y=T0+i*rowH+rowH/2-4,g=el('g',{});
+      g.appendChild(el('rect',{x:L,y:y-13,width:Math.max(X(AVGR[b])-L,3),height:26,fill:GC[b],opacity:i===0?.92:.62,rx:3}));
+      tipOn(g,'<b>bin '+b+'</b><br>mean rank '+AVGR[b].toFixed(2)+' of 6<br>ranks per measurement: '+RANKS.map(s2=>s2.r[b]).join(', '));
+      s.appendChild(g);
+      txt(s,L-12,y+5,'bin '+b,{a:'end',w:600,fs:13.5,f:'#1a2a44'});
+      txt(s,X(AVGR[b])+10,y+5,'rank '+AVGR[b].toFixed(2),{a:'start',w:600,fs:12,f:GC[b]});
+      if(i===0)txt(s,X(AVGR[b])+96,y+5,'\u2190 best',{a:'start',w:600,fs:12,f:'#0d9488'});
+      if(i===5)txt(s,X(AVGR[b])+96,y+5,'\u2190 worst',{a:'start',w:600,fs:12,f:'#c2563a'});
+      RANKS.forEach(s2=>{const x=X(s2.r[b]);
+        s.appendChild(el('circle',{cx:x,cy:y+19,r:3.4,fill:'#fffdf8',stroke:GC[b],'stroke-width':1.8,opacity:.95}))});
+    });
+    txt(s,(L+R)/2,T0+6*rowH+22,'mean rank across 6 measurements (3 models × 2 tests) · longer bar = better · dots = individual measurements');
+    document.getElementById('cf0').appendChild(s);
+  })();
+
+
+})();
+(function(){
+  const bestOf=(arr,skip5)=>Math.max(...(skip5?arr.slice(1):arr));
+  const rel=(D,skip5)=>{const v=D.map(a=>bestOf(a,skip5)*100),m=v.reduce((x,y)=>x+y,0)/6;return v.map(x=>x-m)};
+  const SER=[{nm:'Llama-3B',c:'#0d9488',t:'random600',v:rel(CR_L,0)},{nm:'Llama-3B',c:'#0d9488',t:'balanced600',v:rel(CB_L,0),hollow:1},
+    {nm:'Qwen2.5-3B',c:'#2a6fdb',t:'random600',v:rel(CR_Q,0)},{nm:'Qwen2.5-3B',c:'#2a6fdb',t:'balanced600',v:rel(CB_Q,0),hollow:1},
+    {nm:'Phi-4-mini',c:'#c2563a',t:'random600',v:rel(CR_P,1)},{nm:'Phi-4-mini',c:'#c2563a',t:'balanced600',v:rel(CB_P,1),hollow:1}];
+  const AVG=[0,1,2,3,4,5].map(b=>SER.reduce((a,s)=>a+s.v[b],0)/SER.length);
+  const w=1000,h=390,L=80,R=940,T0=40,B=300;const s=svg(w,h);
+  const lo=-4.5,hi=4.5,Y=v=>B-(v-lo)/(hi-lo)*(B-T0),gw=(R-L)/6,CX=b=>L+b*gw+gw/2;
+  [-4,-3,-2,-1,0,1,2,3,4].forEach(v=>{s.appendChild(el('line',{x1:L,y1:Y(v),x2:R,y2:Y(v),stroke:v===0?'#1a2a44':'rgba(26,42,68,.07)','stroke-width':v===0?1.4:1}));txt(s,L-10,Y(v)+4,(v>0?'+':'')+v,{a:'end'})});
+  txt(s,L-10,T0-10,'pp',{a:'end',fs:10});
+  const bw=64;
+  for(let b=0;b<6;b++){
+    const y0=Y(0),y=Y(AVG[b]),gg=el('g',{});
+    gg.appendChild(el('rect',{x:CX(b)-bw/2,y:Math.min(y0,y),width:bw,height:Math.max(Math.abs(y-y0),2),fill:AVG[b]>=0?'#0d9488':'#c2563a',opacity:.22,rx:3}));
+    tipOn(gg,'<b>bin '+b+'</b><br>mean of 6 series: '+(AVG[b]>=0?'+':'')+AVG[b].toFixed(2)+' pp');
+    s.appendChild(gg);
+    const col2=SER.map(se=>se.v[b]),mu=AVG[b],sem=Math.sqrt(col2.reduce((a,c)=>a+(c-mu)**2,0)/(col2.length-1)/col2.length),ci=1.96*sem;
+    const wg=el('g',{});
+    wg.appendChild(el('line',{x1:CX(b),y1:Y(mu-ci),x2:CX(b),y2:Y(mu+ci),stroke:'#1a2a44','stroke-width':1.6,opacity:.55}));
+    [mu-ci,mu+ci].forEach(v=>wg.appendChild(el('line',{x1:CX(b)-7,y1:Y(v),x2:CX(b)+7,y2:Y(v),stroke:'#1a2a44','stroke-width':1.6,opacity:.55})));
+    tipOn(wg,'<b>bin '+b+'</b><br>mean '+(mu>=0?'+':'')+mu.toFixed(2)+' pp<br>95% CI ['+(mu-ci).toFixed(2)+', '+(mu+ci).toFixed(2)+']');
+    s.appendChild(wg);
+    txt(s,CX(b),T0-10,(AVG[b]>=0?'+':'')+AVG[b].toFixed(2),{w:600,fs:12.5,f:AVG[b]>=0?'#0d9488':'#c2563a'});
+    txt(s,CX(b),B+20,'bin '+b,{w:600});
+    SER.forEach((se,k)=>{const x=CX(b)+(k-2.5)*9,yy=Y(se.v[b]),g2=el('g',{});
+      g2.appendChild(el('circle',{cx:x,cy:yy,r:4,fill:se.hollow?'#fffdf8':se.c,stroke:se.c,'stroke-width':1.8}));
+      g2.appendChild(el('circle',{cx:x,cy:yy,r:9,fill:'transparent'}));
+      tipOn(g2,'<b>'+se.nm+' · '+se.t+'</b><br>bin '+b+': '+(se.v[b]>=0?'+':'')+se.v[b].toFixed(2)+' pp vs own mean');
+      s.appendChild(g2);});
+  }
+  txt(s,(L+R)/2,B+42,'training bin \u00b7 above zero = better than the model\'s own cross-bin mean \u00b7 whiskers = 95% CI over 6 series');
+  let lx=L;[['Llama-3B','#0d9488'],['Qwen2.5-3B','#2a6fdb'],['Phi-4-mini','#c2563a']].forEach(([nm,c])=>{
+    s.appendChild(el('circle',{cx:lx+6,cy:h-14,r:5,fill:c}));txt(s,lx+16,h-10,nm,{a:'start'});lx+=nm.length*7.2+34;});
+  s.appendChild(el('circle',{cx:lx+6,cy:h-14,r:5,fill:'#fffdf8',stroke:'#6b7385','stroke-width':1.8}));
+  txt(s,lx+16,h-10,'hollow = balanced600, filled = random600',{a:'start'});
+  document.getElementById('cf1').appendChild(s);
+})();
+</script>
+</body></html>

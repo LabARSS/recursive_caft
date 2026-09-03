@@ -1,0 +1,44 @@
+{
+  "random_seed42_common_probe_bin5_cap2048": [
+    {
+      "epoch": 5.0,
+      "checkpoint": "checkpoint-130",
+      "accuracy": 0.28,
+      "total": 100,
+      "correct": 28,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 10.0,
+      "checkpoint": "checkpoint-260",
+      "accuracy": 0.25,
+      "total": 100,
+      "correct": 25,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 20.0,
+      "checkpoint": "checkpoint-520",
+      "accuracy": 0.16,
+      "total": 100,
+      "correct": 16,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 35.0,
+      "checkpoint": "checkpoint-910",
+      "accuracy": 0.26,
+      "total": 100,
+      "correct": 26,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 50.0,
+      "checkpoint": "checkpoint-1300",
+      "accuracy": 0.27,
+      "total": 100,
+      "correct": 27,
+      "num_truncated": 0
+    }
+  ]
+}
