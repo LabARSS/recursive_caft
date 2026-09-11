@@ -9,7 +9,7 @@ from experiments.distillation_by_metrics.mmlu.shared import (
 
 run(
     model_name="phi4_mini",
-    relative_out_path="./student_entropy_proportional/phi4_mini_head_truncated8192_shuffle",
+    relative_out_path="./student_entropy_proportional/phi4_mini_head_truncated8192_shuffle_seed44",
     train_dataset="train_corrected_answer_deepseek_v4_pro_and_others_head_truncated8192",
     train_dataset_adapter=get_merged_adapter_with_data_mix(StudentEntropyProportionalSampler),
     save_schedule=[20, 50, 100, 150, 200],

@@ -1,0 +1,14 @@
+{
+  "epoch": 95,
+  "total_rows": 9626,
+  "failed_rows": 0,
+  "failure_rate": 0.0,
+  "backfilled": 0,
+  "residual_failed": 0,
+  "exceeded_threshold": false,
+  "selected_samples": 1280,
+  "selected_samples_by_dataset": {
+    "train_corrected_answer_deepseek_v4_pro_and_others_head_truncated8192": 1024,
+    "mmlu_single_token_train": 256
+  }
+}
