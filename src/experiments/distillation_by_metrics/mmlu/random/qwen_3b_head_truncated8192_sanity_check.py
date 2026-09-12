@@ -1,3 +1,6 @@
+from core.complexity_estimation.entropy.single_token_entropy_with_random_estimator import (
+    SingleTokenEntropyWithRandomEstimator,
+)
 from core.dataset_samplers.base_sampler import BaseDatasetSamplerConfig
 from core.dataset_samplers.random_sampler import RandomSampler
 from core.datasets.causal_dataset_adapter import CausalDatasetAdapter
@@ -24,6 +27,7 @@ run(
         ),
         dataset_sampler=RandomSampler(BaseDatasetSamplerConfig(top_k=9600)),
     ),
+    complexity_estimator_override=SingleTokenEntropyWithRandomEstimator(),
     save_schedule=[20, 50, 100, 150, 200],
     resampling_schedule=[0],
     shuffle=True,
