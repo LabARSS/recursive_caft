@@ -31,10 +31,10 @@ if __name__ == "__main__":
                 config=QADatasetConfig(
                     path=str(
                         Path(__file__).parent.joinpath(
-                            "../../../../../data/out/distillation/gsm8k_distilled_deepseek_v4_flash_extend_w_large.parquet"
+                            "../../../../../data/out/distillation/gsm8k_distilled_deepseek_v4_flash_extend_w_pro_head8192_clean.parquet"
                         )
                     ),
-                    dataset_id="gsm8k_distilled_deepseek_v4_flash_extend_w_large",
+                    dataset_id="gsm8k_distilled_deepseek_v4_flash_extend_w_pro_head8192_clean",
                 ),
             ),
             field_reasoning="corrected_reasoning",
