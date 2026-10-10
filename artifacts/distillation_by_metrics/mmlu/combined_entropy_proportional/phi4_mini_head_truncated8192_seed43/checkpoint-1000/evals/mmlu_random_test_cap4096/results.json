@@ -1,0 +1,7 @@
+{
+  "accuracy": 0.5519534497090607,
+  "total": 2406,
+  "correct": 1328,
+  "num_truncated": 550,
+  "model_path": "/workspace/src/experiments/distillation_by_metrics/mmlu/../../../../artifacts/distillation_by_metrics/mmlu/combined_entropy_proportional/phi4_mini_head_truncated8192_seed43/checkpoint-1000"
+}
