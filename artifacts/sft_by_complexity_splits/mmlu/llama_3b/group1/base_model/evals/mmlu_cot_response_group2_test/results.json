@@ -1,0 +1,7 @@
+{
+  "accuracy": 0.20698254364089774,
+  "total": 401,
+  "correct": 83,
+  "num_truncated": 44,
+  "model_path": "meta-llama/Llama-3.2-3B-Instruct"
+}

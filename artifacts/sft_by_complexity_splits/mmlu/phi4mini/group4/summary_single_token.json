@@ -1,0 +1,590 @@
+{
+  "mmlu_single_token_response_group0_test": [
+    {
+      "epoch": 0.0,
+      "checkpoint": "microsoft/Phi-4-mini-instruct",
+      "accuracy": 0.7581047381546134,
+      "total": 401,
+      "correct": 304,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 1.0,
+      "checkpoint": "checkpoint-26",
+      "accuracy": 0.7456359102244389,
+      "total": 401,
+      "correct": 299,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 2.0,
+      "checkpoint": "checkpoint-52",
+      "accuracy": 0.7556109725685786,
+      "total": 401,
+      "correct": 303,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 3.0,
+      "checkpoint": "checkpoint-78",
+      "accuracy": 0.743142144638404,
+      "total": 401,
+      "correct": 298,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 4.0,
+      "checkpoint": "checkpoint-104",
+      "accuracy": 0.7456359102244389,
+      "total": 401,
+      "correct": 299,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 5.0,
+      "checkpoint": "checkpoint-130",
+      "accuracy": 0.7481296758104738,
+      "total": 401,
+      "correct": 300,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 6.0,
+      "checkpoint": "checkpoint-156",
+      "accuracy": 0.7456359102244389,
+      "total": 401,
+      "correct": 299,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 8.0,
+      "checkpoint": "checkpoint-208",
+      "accuracy": 0.7281795511221946,
+      "total": 401,
+      "correct": 292,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 10.0,
+      "checkpoint": "checkpoint-260",
+      "accuracy": 0.7456359102244389,
+      "total": 401,
+      "correct": 299,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 12.0,
+      "checkpoint": "checkpoint-312",
+      "accuracy": 0.7506234413965087,
+      "total": 401,
+      "correct": 301,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 15.0,
+      "checkpoint": "checkpoint-390",
+      "accuracy": 0.7506234413965087,
+      "total": 401,
+      "correct": 301,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 20.0,
+      "checkpoint": "checkpoint-520",
+      "accuracy": 0.7506234413965087,
+      "total": 401,
+      "correct": 301,
+      "num_truncated": 401
+    }
+  ],
+  "mmlu_single_token_response_group1_test": [
+    {
+      "epoch": 0.0,
+      "checkpoint": "microsoft/Phi-4-mini-instruct",
+      "accuracy": 0.5236907730673317,
+      "total": 401,
+      "correct": 210,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 1.0,
+      "checkpoint": "checkpoint-26",
+      "accuracy": 0.5112219451371571,
+      "total": 401,
+      "correct": 205,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 2.0,
+      "checkpoint": "checkpoint-52",
+      "accuracy": 0.5461346633416458,
+      "total": 401,
+      "correct": 219,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 3.0,
+      "checkpoint": "checkpoint-78",
+      "accuracy": 0.5561097256857855,
+      "total": 401,
+      "correct": 223,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 4.0,
+      "checkpoint": "checkpoint-104",
+      "accuracy": 0.5610972568578554,
+      "total": 401,
+      "correct": 225,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 5.0,
+      "checkpoint": "checkpoint-130",
+      "accuracy": 0.5486284289276808,
+      "total": 401,
+      "correct": 220,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 6.0,
+      "checkpoint": "checkpoint-156",
+      "accuracy": 0.5336658354114713,
+      "total": 401,
+      "correct": 214,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 8.0,
+      "checkpoint": "checkpoint-208",
+      "accuracy": 0.5286783042394015,
+      "total": 401,
+      "correct": 212,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 10.0,
+      "checkpoint": "checkpoint-260",
+      "accuracy": 0.5361596009975063,
+      "total": 401,
+      "correct": 215,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 12.0,
+      "checkpoint": "checkpoint-312",
+      "accuracy": 0.5561097256857855,
+      "total": 401,
+      "correct": 223,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 15.0,
+      "checkpoint": "checkpoint-390",
+      "accuracy": 0.5361596009975063,
+      "total": 401,
+      "correct": 215,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 20.0,
+      "checkpoint": "checkpoint-520",
+      "accuracy": 0.5411471321695761,
+      "total": 401,
+      "correct": 217,
+      "num_truncated": 401
+    }
+  ],
+  "mmlu_single_token_response_group2_test": [
+    {
+      "epoch": 0.0,
+      "checkpoint": "microsoft/Phi-4-mini-instruct",
+      "accuracy": 0.3491271820448878,
+      "total": 401,
+      "correct": 140,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 1.0,
+      "checkpoint": "checkpoint-26",
+      "accuracy": 0.3516209476309227,
+      "total": 401,
+      "correct": 141,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 2.0,
+      "checkpoint": "checkpoint-52",
+      "accuracy": 0.4339152119700748,
+      "total": 401,
+      "correct": 174,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 3.0,
+      "checkpoint": "checkpoint-78",
+      "accuracy": 0.4314214463840399,
+      "total": 401,
+      "correct": 173,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 4.0,
+      "checkpoint": "checkpoint-104",
+      "accuracy": 0.43640897755610975,
+      "total": 401,
+      "correct": 175,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 5.0,
+      "checkpoint": "checkpoint-130",
+      "accuracy": 0.428927680798005,
+      "total": 401,
+      "correct": 172,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 6.0,
+      "checkpoint": "checkpoint-156",
+      "accuracy": 0.43640897755610975,
+      "total": 401,
+      "correct": 175,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 8.0,
+      "checkpoint": "checkpoint-208",
+      "accuracy": 0.428927680798005,
+      "total": 401,
+      "correct": 172,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 10.0,
+      "checkpoint": "checkpoint-260",
+      "accuracy": 0.42144638403990026,
+      "total": 401,
+      "correct": 169,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 12.0,
+      "checkpoint": "checkpoint-312",
+      "accuracy": 0.44389027431421446,
+      "total": 401,
+      "correct": 178,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 15.0,
+      "checkpoint": "checkpoint-390",
+      "accuracy": 0.44139650872817954,
+      "total": 401,
+      "correct": 177,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 20.0,
+      "checkpoint": "checkpoint-520",
+      "accuracy": 0.4463840399002494,
+      "total": 401,
+      "correct": 179,
+      "num_truncated": 401
+    }
+  ],
+  "mmlu_single_token_response_group3_test": [
+    {
+      "epoch": 0.0,
+      "checkpoint": "microsoft/Phi-4-mini-instruct",
+      "accuracy": 0.24688279301745636,
+      "total": 401,
+      "correct": 99,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 1.0,
+      "checkpoint": "checkpoint-26",
+      "accuracy": 0.26683291770573564,
+      "total": 401,
+      "correct": 107,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 2.0,
+      "checkpoint": "checkpoint-52",
+      "accuracy": 0.3316708229426434,
+      "total": 401,
+      "correct": 133,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 3.0,
+      "checkpoint": "checkpoint-78",
+      "accuracy": 0.3640897755610973,
+      "total": 401,
+      "correct": 146,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 4.0,
+      "checkpoint": "checkpoint-104",
+      "accuracy": 0.371571072319202,
+      "total": 401,
+      "correct": 149,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 5.0,
+      "checkpoint": "checkpoint-130",
+      "accuracy": 0.32917705735660846,
+      "total": 401,
+      "correct": 132,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 6.0,
+      "checkpoint": "checkpoint-156",
+      "accuracy": 0.38154613466334164,
+      "total": 401,
+      "correct": 153,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 8.0,
+      "checkpoint": "checkpoint-208",
+      "accuracy": 0.35910224438902744,
+      "total": 401,
+      "correct": 144,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 10.0,
+      "checkpoint": "checkpoint-260",
+      "accuracy": 0.3516209476309227,
+      "total": 401,
+      "correct": 141,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 12.0,
+      "checkpoint": "checkpoint-312",
+      "accuracy": 0.32917705735660846,
+      "total": 401,
+      "correct": 132,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 15.0,
+      "checkpoint": "checkpoint-390",
+      "accuracy": 0.33915211970074816,
+      "total": 401,
+      "correct": 136,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 20.0,
+      "checkpoint": "checkpoint-520",
+      "accuracy": 0.3516209476309227,
+      "total": 401,
+      "correct": 141,
+      "num_truncated": 401
+    }
+  ],
+  "mmlu_single_token_response_group4_test": [
+    {
+      "epoch": 0.0,
+      "checkpoint": "microsoft/Phi-4-mini-instruct",
+      "accuracy": 0.2543640897755611,
+      "total": 401,
+      "correct": 102,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 1.0,
+      "checkpoint": "checkpoint-26",
+      "accuracy": 0.3266832917705736,
+      "total": 401,
+      "correct": 131,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 2.0,
+      "checkpoint": "checkpoint-52",
+      "accuracy": 0.3865336658354115,
+      "total": 401,
+      "correct": 155,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 3.0,
+      "checkpoint": "checkpoint-78",
+      "accuracy": 0.4014962593516209,
+      "total": 401,
+      "correct": 161,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 4.0,
+      "checkpoint": "checkpoint-104",
+      "accuracy": 0.4139650872817955,
+      "total": 401,
+      "correct": 166,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 5.0,
+      "checkpoint": "checkpoint-130",
+      "accuracy": 0.3940149625935162,
+      "total": 401,
+      "correct": 158,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 6.0,
+      "checkpoint": "checkpoint-156",
+      "accuracy": 0.3915211970074813,
+      "total": 401,
+      "correct": 157,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 8.0,
+      "checkpoint": "checkpoint-208",
+      "accuracy": 0.38403990024937656,
+      "total": 401,
+      "correct": 154,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 10.0,
+      "checkpoint": "checkpoint-260",
+      "accuracy": 0.36658354114713215,
+      "total": 401,
+      "correct": 147,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 12.0,
+      "checkpoint": "checkpoint-312",
+      "accuracy": 0.3765586034912718,
+      "total": 401,
+      "correct": 151,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 15.0,
+      "checkpoint": "checkpoint-390",
+      "accuracy": 0.3865336658354115,
+      "total": 401,
+      "correct": 155,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 20.0,
+      "checkpoint": "checkpoint-520",
+      "accuracy": 0.38902743142144636,
+      "total": 401,
+      "correct": 156,
+      "num_truncated": 401
+    }
+  ],
+  "mmlu_single_token_response_group5_test": [
+    {
+      "epoch": 0.0,
+      "checkpoint": "microsoft/Phi-4-mini-instruct",
+      "accuracy": 0.17206982543640897,
+      "total": 401,
+      "correct": 69,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 1.0,
+      "checkpoint": "checkpoint-26",
+      "accuracy": 0.32418952618453867,
+      "total": 401,
+      "correct": 130,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 2.0,
+      "checkpoint": "checkpoint-52",
+      "accuracy": 0.4389027431421446,
+      "total": 401,
+      "correct": 176,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 3.0,
+      "checkpoint": "checkpoint-78",
+      "accuracy": 0.4463840399002494,
+      "total": 401,
+      "correct": 179,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 4.0,
+      "checkpoint": "checkpoint-104",
+      "accuracy": 0.4613466334164589,
+      "total": 401,
+      "correct": 185,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 5.0,
+      "checkpoint": "checkpoint-130",
+      "accuracy": 0.4613466334164589,
+      "total": 401,
+      "correct": 185,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 6.0,
+      "checkpoint": "checkpoint-156",
+      "accuracy": 0.43640897755610975,
+      "total": 401,
+      "correct": 175,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 8.0,
+      "checkpoint": "checkpoint-208",
+      "accuracy": 0.44389027431421446,
+      "total": 401,
+      "correct": 178,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 10.0,
+      "checkpoint": "checkpoint-260",
+      "accuracy": 0.4538653366583541,
+      "total": 401,
+      "correct": 182,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 12.0,
+      "checkpoint": "checkpoint-312",
+      "accuracy": 0.45885286783042395,
+      "total": 401,
+      "correct": 184,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 15.0,
+      "checkpoint": "checkpoint-390",
+      "accuracy": 0.4713216957605985,
+      "total": 401,
+      "correct": 189,
+      "num_truncated": 401
+    },
+    {
+      "epoch": 20.0,
+      "checkpoint": "checkpoint-520",
+      "accuracy": 0.46384039900249374,
+      "total": 401,
+      "correct": 186,
+      "num_truncated": 401
+    }
+  ]
+}

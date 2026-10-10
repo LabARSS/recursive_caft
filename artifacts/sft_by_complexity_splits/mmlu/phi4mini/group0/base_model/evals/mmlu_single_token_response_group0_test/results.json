@@ -1,0 +1,7 @@
+{
+  "accuracy": 0.7581047381546134,
+  "total": 401,
+  "correct": 304,
+  "num_truncated": 401,
+  "model_path": "microsoft/Phi-4-mini-instruct"
+}

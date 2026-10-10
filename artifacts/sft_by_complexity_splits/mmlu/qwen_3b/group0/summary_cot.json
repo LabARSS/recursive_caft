@@ -1,0 +1,590 @@
+{
+  "mmlu_cot_response_group0_test": [
+    {
+      "epoch": 0.0,
+      "checkpoint": "Qwen/Qwen2.5-3B-Instruct",
+      "accuracy": 0.6458852867830424,
+      "total": 401,
+      "correct": 259,
+      "num_truncated": 2
+    },
+    {
+      "epoch": 1.0,
+      "checkpoint": "checkpoint-26",
+      "accuracy": 0.0024937655860349127,
+      "total": 401,
+      "correct": 1,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 2.0,
+      "checkpoint": "checkpoint-52",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 3.0,
+      "checkpoint": "checkpoint-78",
+      "accuracy": 0.0024937655860349127,
+      "total": 401,
+      "correct": 1,
+      "num_truncated": 1
+    },
+    {
+      "epoch": 4.0,
+      "checkpoint": "checkpoint-104",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 5.0,
+      "checkpoint": "checkpoint-130",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 6.0,
+      "checkpoint": "checkpoint-156",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 8.0,
+      "checkpoint": "checkpoint-208",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 10.0,
+      "checkpoint": "checkpoint-260",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 12.0,
+      "checkpoint": "checkpoint-312",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 15.0,
+      "checkpoint": "checkpoint-390",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 20.0,
+      "checkpoint": "checkpoint-520",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    }
+  ],
+  "mmlu_cot_response_group1_test": [
+    {
+      "epoch": 0.0,
+      "checkpoint": "Qwen/Qwen2.5-3B-Instruct",
+      "accuracy": 0.4912718204488778,
+      "total": 401,
+      "correct": 197,
+      "num_truncated": 6
+    },
+    {
+      "epoch": 1.0,
+      "checkpoint": "checkpoint-26",
+      "accuracy": 0.004987531172069825,
+      "total": 401,
+      "correct": 2,
+      "num_truncated": 8
+    },
+    {
+      "epoch": 2.0,
+      "checkpoint": "checkpoint-52",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 3.0,
+      "checkpoint": "checkpoint-78",
+      "accuracy": 0.0024937655860349127,
+      "total": 401,
+      "correct": 1,
+      "num_truncated": 3
+    },
+    {
+      "epoch": 4.0,
+      "checkpoint": "checkpoint-104",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 5.0,
+      "checkpoint": "checkpoint-130",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 1
+    },
+    {
+      "epoch": 6.0,
+      "checkpoint": "checkpoint-156",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 8.0,
+      "checkpoint": "checkpoint-208",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 10.0,
+      "checkpoint": "checkpoint-260",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 12.0,
+      "checkpoint": "checkpoint-312",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 15.0,
+      "checkpoint": "checkpoint-390",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 20.0,
+      "checkpoint": "checkpoint-520",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    }
+  ],
+  "mmlu_cot_response_group2_test": [
+    {
+      "epoch": 0.0,
+      "checkpoint": "Qwen/Qwen2.5-3B-Instruct",
+      "accuracy": 0.3765586034912718,
+      "total": 401,
+      "correct": 151,
+      "num_truncated": 10
+    },
+    {
+      "epoch": 1.0,
+      "checkpoint": "checkpoint-26",
+      "accuracy": 0.007481296758104738,
+      "total": 401,
+      "correct": 3,
+      "num_truncated": 6
+    },
+    {
+      "epoch": 2.0,
+      "checkpoint": "checkpoint-52",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 3.0,
+      "checkpoint": "checkpoint-78",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 4
+    },
+    {
+      "epoch": 4.0,
+      "checkpoint": "checkpoint-104",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 5.0,
+      "checkpoint": "checkpoint-130",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 2
+    },
+    {
+      "epoch": 6.0,
+      "checkpoint": "checkpoint-156",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 8.0,
+      "checkpoint": "checkpoint-208",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 10.0,
+      "checkpoint": "checkpoint-260",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 12.0,
+      "checkpoint": "checkpoint-312",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 15.0,
+      "checkpoint": "checkpoint-390",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 20.0,
+      "checkpoint": "checkpoint-520",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    }
+  ],
+  "mmlu_cot_response_group3_test": [
+    {
+      "epoch": 0.0,
+      "checkpoint": "Qwen/Qwen2.5-3B-Instruct",
+      "accuracy": 0.34413965087281795,
+      "total": 401,
+      "correct": 138,
+      "num_truncated": 2
+    },
+    {
+      "epoch": 1.0,
+      "checkpoint": "checkpoint-26",
+      "accuracy": 0.007481296758104738,
+      "total": 401,
+      "correct": 3,
+      "num_truncated": 8
+    },
+    {
+      "epoch": 2.0,
+      "checkpoint": "checkpoint-52",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 1
+    },
+    {
+      "epoch": 3.0,
+      "checkpoint": "checkpoint-78",
+      "accuracy": 0.0024937655860349127,
+      "total": 401,
+      "correct": 1,
+      "num_truncated": 11
+    },
+    {
+      "epoch": 4.0,
+      "checkpoint": "checkpoint-104",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 5.0,
+      "checkpoint": "checkpoint-130",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 1
+    },
+    {
+      "epoch": 6.0,
+      "checkpoint": "checkpoint-156",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 8.0,
+      "checkpoint": "checkpoint-208",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 10.0,
+      "checkpoint": "checkpoint-260",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 12.0,
+      "checkpoint": "checkpoint-312",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 15.0,
+      "checkpoint": "checkpoint-390",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 20.0,
+      "checkpoint": "checkpoint-520",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    }
+  ],
+  "mmlu_cot_response_group4_test": [
+    {
+      "epoch": 0.0,
+      "checkpoint": "Qwen/Qwen2.5-3B-Instruct",
+      "accuracy": 0.371571072319202,
+      "total": 401,
+      "correct": 149,
+      "num_truncated": 4
+    },
+    {
+      "epoch": 1.0,
+      "checkpoint": "checkpoint-26",
+      "accuracy": 0.012468827930174564,
+      "total": 401,
+      "correct": 5,
+      "num_truncated": 8
+    },
+    {
+      "epoch": 2.0,
+      "checkpoint": "checkpoint-52",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 1
+    },
+    {
+      "epoch": 3.0,
+      "checkpoint": "checkpoint-78",
+      "accuracy": 0.0024937655860349127,
+      "total": 401,
+      "correct": 1,
+      "num_truncated": 8
+    },
+    {
+      "epoch": 4.0,
+      "checkpoint": "checkpoint-104",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 5.0,
+      "checkpoint": "checkpoint-130",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 2
+    },
+    {
+      "epoch": 6.0,
+      "checkpoint": "checkpoint-156",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 2
+    },
+    {
+      "epoch": 8.0,
+      "checkpoint": "checkpoint-208",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 10.0,
+      "checkpoint": "checkpoint-260",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 12.0,
+      "checkpoint": "checkpoint-312",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 15.0,
+      "checkpoint": "checkpoint-390",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 20.0,
+      "checkpoint": "checkpoint-520",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    }
+  ],
+  "mmlu_cot_response_group5_test": [
+    {
+      "epoch": 0.0,
+      "checkpoint": "Qwen/Qwen2.5-3B-Instruct",
+      "accuracy": 0.04488778054862843,
+      "total": 401,
+      "correct": 18,
+      "num_truncated": 25
+    },
+    {
+      "epoch": 1.0,
+      "checkpoint": "checkpoint-26",
+      "accuracy": 0.00997506234413965,
+      "total": 401,
+      "correct": 4,
+      "num_truncated": 19
+    },
+    {
+      "epoch": 2.0,
+      "checkpoint": "checkpoint-52",
+      "accuracy": 0.0024937655860349127,
+      "total": 401,
+      "correct": 1,
+      "num_truncated": 6
+    },
+    {
+      "epoch": 3.0,
+      "checkpoint": "checkpoint-78",
+      "accuracy": 0.004987531172069825,
+      "total": 401,
+      "correct": 2,
+      "num_truncated": 20
+    },
+    {
+      "epoch": 4.0,
+      "checkpoint": "checkpoint-104",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 5.0,
+      "checkpoint": "checkpoint-130",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 6
+    },
+    {
+      "epoch": 6.0,
+      "checkpoint": "checkpoint-156",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 1
+    },
+    {
+      "epoch": 8.0,
+      "checkpoint": "checkpoint-208",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 10.0,
+      "checkpoint": "checkpoint-260",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 12.0,
+      "checkpoint": "checkpoint-312",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 1
+    },
+    {
+      "epoch": 15.0,
+      "checkpoint": "checkpoint-390",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 20.0,
+      "checkpoint": "checkpoint-520",
+      "accuracy": 0.0,
+      "total": 401,
+      "correct": 0,
+      "num_truncated": 0
+    }
+  ]
+}
