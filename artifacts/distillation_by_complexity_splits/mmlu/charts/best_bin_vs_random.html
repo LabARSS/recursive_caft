@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Best bin vs random baselines (random600)</title>
+<style>
+  :root{--bg:#f7f4ee;--ink:#1a2a44;--line:rgba(26,42,68,.14);--mut:#6b7385;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;line-height:1.5}
+  .wrap{max-width:1080px;margin:0 auto;padding:36px 40px 60px}
+  h1{font-family:Georgia,"Times New Roman",serif;font-weight:500;font-size:28px;margin:0 0 18px;letter-spacing:-.01em}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 14px 10px;background:#fffdf8;margin-top:16px}
+  .card .ct{font-size:13px;font-family:IBM Plex Mono,monospace;color:var(--mut);margin:2px 6px 6px}
+  .legend{display:flex;flex-wrap:wrap;gap:16px;margin:12px 2px 0;font-size:12.5px;font-family:IBM Plex Mono,monospace}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .legend i{width:20px;height:0;border-top-width:3px;display:inline-block}
+  .small{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-top:14px}
+  .small .card{margin-top:0}
+  @media(max-width:900px){.small{grid-template-columns:1fr}}
+  nav{font-size:13px;font-family:IBM Plex Mono,monospace;margin:0 0 10px}
+  nav a{color:#2a6fdb;text-decoration:none}nav a:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav><a href="index.html">index</a> · <a href="common_test_accuracy_by_epoch.html">Common test: accuracy by epoch</a> · <a href="common_test_best_epoch.html">Common test: best epoch per training bin</a> · <a href="in_bin_accuracy_by_epoch.html">In-bin test: accuracy by epoch</a> · <a href="best_epoch_accuracy_vs_bin.html">Best-epoch accuracy vs complexity bin</a> · <a href="training_gain_by_bin.html">Training gain by bin</a> · <a href="generation_cap.html">Generation cap: cap4096 vs cap2048</a> · <a href="training_bin_transfer.html">Training bin: own-bin gain vs transfer (balanced600)</a> · <a href="training_bin_ranking.html">Training bin ranking (common tests)</a></nav>
+<h1>Best bin vs random baselines (random600)</h1>
+<div class="card"><div class="ct">best bin vs random of the same size (seed42, diamond) and the repository random-arm (epochs ≤50)</div><div id="cd3"></div></div>
+</div>
+<script src="common.js"></script>
+<script>
+(function(){
+  const RND={llama:{10:.4621779,20:.5058188,50:.5033250},qwen:{10:.4650873,20:.5211970,50:.5536160},phi:{10:.5752286,20:.6396509,50:.6600166}};
+  const MR={llama:RB_L.rand,qwen:RB_Q.rand,phi:null};
+  const BINS={llama:CR_L.map(a=>Math.max(...a)),qwen:CR_Q.map(a=>Math.max(...a)),phi:CR_P.map(a=>Math.max(...a.slice(1)))};
+  const MD=[['llama','Llama-3B'],['qwen','Qwen2.5-3B'],['phi','Phi-4-mini']];
+  const w=1000,h=400,L=76,R=940,T0=34,B=300;const s=svg(w,h);
+  const lo=.28,hi=.70,Y=v=>B-(v-lo)/(hi-lo)*(B-T0),gw=(R-L)/3,CX=i=>L+i*gw+gw/2;
+  [.30,.35,.40,.45,.50,.55,.60,.65,.70].forEach(v=>{s.appendChild(el('line',{x1:L,y1:Y(v),x2:R,y2:Y(v),stroke:'rgba(26,42,68,.07)'}));txt(s,L-10,Y(v)+4,Math.round(v*100)+'%',{a:'end'})});
+  s.appendChild(el('line',{x1:L,y1:B,x2:R,y2:B,stroke:'#8b93a1'}));
+  MD.forEach(([k,nm],i)=>{
+    if(i)s.appendChild(el('line',{x1:L+i*gw,y1:T0,x2:L+i*gw,y2:B,stroke:'rgba(26,42,68,.12)'}));
+    txt(s,CX(i),B+20,nm,{w:600,fs:12.5,f:'#1a2a44'});
+    const rv=Math.max(...Object.values(RND[k])),g=el('g',{});
+    g.appendChild(el('line',{x1:CX(i)-gw*.36,y1:Y(rv),x2:CX(i)+gw*.36,y2:Y(rv),stroke:'#1a2a44','stroke-width':2.6,'stroke-dasharray':'7 4'}));
+    tipOn(g,'<b>'+nm+' · random-arm</b><br>best point ≤50 epochs: '+(rv*100).toFixed(1)+'%<br>resampled every epoch, test n=2406');
+    s.appendChild(g);
+    txt(s,CX(i)+gw*.36+6,Y(rv)+4,'random '+(rv*100).toFixed(1)+'%',{a:'start',f:'#1a2a44',w:600,fs:11});
+    const mr=MR[k];if(mr){const ma=mr,mv=Math.max(...ma),me=[5,10,20,35,50][mr.indexOf(mv)],bb=Math.max(...BINS[k]),bm=BINS[k].reduce((a,c)=>a+c,0)/6,g2=el('g',{}),dx=CX(i)+4*17,dy=Y(mv);
+    g2.appendChild(el('line',{x1:CX(i)-gw*.36,y1:dy,x2:CX(i)+gw*.36,y2:dy,stroke:'#6b7385','stroke-width':1.6,'stroke-dasharray':'3 3'}));
+    g2.appendChild(el('path',{d:'M'+dx+' '+(dy-8)+' L'+(dx+8)+' '+dy+' L'+dx+' '+(dy+8)+' L'+(dx-8)+' '+dy+' Z',fill:'#6b7385',stroke:'#fffdf8','stroke-width':1.4}));
+    g2.appendChild(el('rect',{x:CX(i)-gw*.36,y:dy-9,width:gw*.72,height:18,fill:'transparent'}));
+    tipOn(g2,'<b>'+nm+' · random seed42, same size</b><br>best point ≤50 epochs: '+(mv*100).toFixed(1)+'% @ ep'+me+' · random600<br>best bin '+(bb*100).toFixed(1)+'% ('+((bb-mv)*100>=0?'+':'')+((bb-mv)*100).toFixed(1)+' pp) · mean over bins '+(bm*100).toFixed(1)+'% ('+((bm-mv)*100>=0?'+':'')+((bm-mv)*100).toFixed(1)+' pp)');
+    s.appendChild(g2);
+    txt(s,dx+13,dy+4,(mv*100).toFixed(1)+'%',{a:'start',f:'#6b7385',w:600,fs:10.5});}
+    else txt(s,CX(i),B-8,'random seed42: pending recompute',{f:'#6b7385',fs:10.5});
+    BINS[k].forEach((v,b)=>{const x=CX(i)+(b-2.5)*17,gg=el('g',{});
+      gg.appendChild(el('circle',{cx:x,cy:Y(v),r:5.5,fill:GC[b],opacity:.9,stroke:'#fffdf8','stroke-width':1.4}));
+      gg.appendChild(el('circle',{cx:x,cy:Y(v),r:11,fill:'transparent'}));
+      tipOn(gg,'<b>'+nm+' · bin '+b+'</b><br>best point on random600: '+(v*100).toFixed(1)+'%<br>gap to random-arm: '+((v-rv)*100).toFixed(1)+' pp');
+      s.appendChild(gg);});
+    const bv=Math.max(...BINS[k]);
+    txt(s,CX(i),Y(bv)-17,'best bin '+(bv*100).toFixed(1)+'%',{f:'#6b7385',fs:11});
+  });
+  let lx=L,ly=h-36;[0,1,2,3,4,5].forEach(b=>{s.appendChild(el('circle',{cx:lx+6,cy:ly,r:5,fill:GC[b]}));txt(s,lx+15,ly+4,'bin '+b,{a:'start',fs:11});lx+=64});
+  s.appendChild(el('line',{x1:lx+4,y1:ly,x2:lx+26,y2:ly,stroke:'#1a2a44','stroke-width':2.6,'stroke-dasharray':'7 4'}));
+  txt(s,lx+32,ly+4,'random-arm from the repository (full pool, resampled every epoch, n=2406)',{a:'start',fs:11});
+  ly=h-14;s.appendChild(el('line',{x1:L+4,y1:ly,x2:L+26,y2:ly,stroke:'#6b7385','stroke-width':1.6,'stroke-dasharray':'3 3'}));
+  s.appendChild(el('path',{d:'M'+(L+15)+' '+(ly-6)+' L'+(L+21)+' '+ly+' L'+(L+15)+' '+(ly+6)+' L'+(L+9)+' '+ly+' Z',fill:'#6b7385'}));
+  txt(s,L+32,ly+4,'random seed42 — fixed random sample of the same size as a bin (~1.6k), test random600',{a:'start',fs:11});
+  document.getElementById('cd3').appendChild(s);
+})();
+</script>
+</body></html>

@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Best-epoch accuracy vs complexity bin</title>
+<style>
+  :root{--bg:#f7f4ee;--ink:#1a2a44;--line:rgba(26,42,68,.14);--mut:#6b7385;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;line-height:1.5}
+  .wrap{max-width:1080px;margin:0 auto;padding:36px 40px 60px}
+  h1{font-family:Georgia,"Times New Roman",serif;font-weight:500;font-size:28px;margin:0 0 18px;letter-spacing:-.01em}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 14px 10px;background:#fffdf8;margin-top:16px}
+  .card .ct{font-size:13px;font-family:IBM Plex Mono,monospace;color:var(--mut);margin:2px 6px 6px}
+  .legend{display:flex;flex-wrap:wrap;gap:16px;margin:12px 2px 0;font-size:12.5px;font-family:IBM Plex Mono,monospace}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .legend i{width:20px;height:0;border-top-width:3px;display:inline-block}
+  .small{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-top:14px}
+  .small .card{margin-top:0}
+  @media(max-width:900px){.small{grid-template-columns:1fr}}
+  nav{font-size:13px;font-family:IBM Plex Mono,monospace;margin:0 0 10px}
+  nav a{color:#2a6fdb;text-decoration:none}nav a:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav><a href="index.html">index</a> · <a href="common_test_accuracy_by_epoch.html">Common test: accuracy by epoch</a> · <a href="common_test_best_epoch.html">Common test: best epoch per training bin</a> · <a href="in_bin_accuracy_by_epoch.html">In-bin test: accuracy by epoch</a> · <a href="training_gain_by_bin.html">Training gain by bin</a> · <a href="generation_cap.html">Generation cap: cap4096 vs cap2048</a> · <a href="training_bin_transfer.html">Training bin: own-bin gain vs transfer (balanced600)</a> · <a href="training_bin_ranking.html">Training bin ranking (common tests)</a> · <a href="best_bin_vs_random.html">Best bin vs random baselines (random600)</a></nav>
+<h1>Best-epoch accuracy vs complexity bin</h1>
+<div class="card"><div class="ct">best-epoch accuracy vs bin (in-bin test)</div><div id="c1"></div></div><div class="legend" id="leg1"></div>
+</div>
+<script src="common.js"></script>
+<script>
+(function(){
+  const w=1000,h=340,L=64,R=970,T0=18,B=286;
+  const s=svg(w,h);const X=b=>L+b*(R-L)/5;
+  const Y=axes(s,L,R,T0,B,.15,.70,[.2,.25,.3,.4,.5,.6,.7],[0,1,2,3,4,5].map(X),['bin 0','bin 1','bin 2','bin 3','bin 4','bin 5']);
+  SER.forEach(se=>{
+    let seg=[];const flush=()=>{if(!seg.length)return;
+      s.appendChild(el('path',{d:seg.map((p,i)=>(i?'L':'M')+p[0]+' '+p[1]).join(' '),fill:'none',stroke:se.c,'stroke-width':2.4,'stroke-dasharray':se.d,'stroke-linejoin':'round'}));
+      seg.forEach(p=>s.appendChild(el('circle',{cx:p[0],cy:p[1],r:4,fill:'#fffdf8',stroke:se.c,'stroke-width':2.2})));seg=[];};
+    for(let b=0;b<6;b++){const v=best(se.k,b);if(v==null){flush();continue}seg.push([X(b),Y(v)])}
+    flush();
+  });
+  document.getElementById('c1').appendChild(s);
+})();
+legendSeries('leg1',SER);
+</script>
+</body></html>

@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Complexity bins · charts</title>
+<style>
+  :root{--bg:#f7f4ee;--ink:#1a2a44;--line:rgba(26,42,68,.14);--mut:#6b7385;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;line-height:1.5}
+  .wrap{max-width:1080px;margin:0 auto;padding:36px 40px 60px}
+  h1{font-family:Georgia,"Times New Roman",serif;font-weight:500;font-size:28px;margin:0 0 18px;letter-spacing:-.01em}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 14px 10px;background:#fffdf8;margin-top:16px}
+  .card .ct{font-size:13px;font-family:IBM Plex Mono,monospace;color:var(--mut);margin:2px 6px 6px}
+  .legend{display:flex;flex-wrap:wrap;gap:16px;margin:12px 2px 0;font-size:12.5px;font-family:IBM Plex Mono,monospace}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .legend i{width:20px;height:0;border-top-width:3px;display:inline-block}
+  .small{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-top:14px}
+  .small .card{margin-top:0}
+  @media(max-width:900px){.small{grid-template-columns:1fr}}
+  nav{font-size:13px;font-family:IBM Plex Mono,monospace;margin:0 0 10px}
+  nav a{color:#2a6fdb;text-decoration:none}nav a:hover{text-decoration:underline}
+
+  ul{font-size:16px;line-height:1.9} a{color:#2a6fdb;text-decoration:none} a:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>Complexity bins · charts</h1>
+<ul>
+<li><a href="common_test_accuracy_by_epoch.html">Common test: accuracy by epoch</a></li>
+<li><a href="common_test_best_epoch.html">Common test: best epoch per training bin</a></li>
+<li><a href="in_bin_accuracy_by_epoch.html">In-bin test: accuracy by epoch</a></li>
+<li><a href="best_epoch_accuracy_vs_bin.html">Best-epoch accuracy vs complexity bin</a></li>
+<li><a href="training_gain_by_bin.html">Training gain by bin</a></li>
+<li><a href="generation_cap.html">Generation cap: cap4096 vs cap2048</a></li>
+<li><a href="training_bin_transfer.html">Training bin: own-bin gain vs transfer (balanced600)</a></li>
+<li><a href="training_bin_ranking.html">Training bin ranking (common tests)</a></li>
+<li><a href="best_bin_vs_random.html">Best bin vs random baselines (random600)</a></li>
+</ul>
+</div>
+</body></html>

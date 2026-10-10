@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Generation cap: cap4096 vs cap2048</title>
+<style>
+  :root{--bg:#f7f4ee;--ink:#1a2a44;--line:rgba(26,42,68,.14);--mut:#6b7385;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;line-height:1.5}
+  .wrap{max-width:1080px;margin:0 auto;padding:36px 40px 60px}
+  h1{font-family:Georgia,"Times New Roman",serif;font-weight:500;font-size:28px;margin:0 0 18px;letter-spacing:-.01em}
+  .card{border:1px solid var(--line);border-radius:10px;padding:14px 14px 10px;background:#fffdf8;margin-top:16px}
+  .card .ct{font-size:13px;font-family:IBM Plex Mono,monospace;color:var(--mut);margin:2px 6px 6px}
+  .legend{display:flex;flex-wrap:wrap;gap:16px;margin:12px 2px 0;font-size:12.5px;font-family:IBM Plex Mono,monospace}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .legend i{width:20px;height:0;border-top-width:3px;display:inline-block}
+  .small{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-top:14px}
+  .small .card{margin-top:0}
+  @media(max-width:900px){.small{grid-template-columns:1fr}}
+  nav{font-size:13px;font-family:IBM Plex Mono,monospace;margin:0 0 10px}
+  nav a{color:#2a6fdb;text-decoration:none}nav a:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav><a href="index.html">index</a> · <a href="common_test_accuracy_by_epoch.html">Common test: accuracy by epoch</a> · <a href="common_test_best_epoch.html">Common test: best epoch per training bin</a> · <a href="in_bin_accuracy_by_epoch.html">In-bin test: accuracy by epoch</a> · <a href="best_epoch_accuracy_vs_bin.html">Best-epoch accuracy vs complexity bin</a> · <a href="training_gain_by_bin.html">Training gain by bin</a> · <a href="training_bin_transfer.html">Training bin: own-bin gain vs transfer (balanced600)</a> · <a href="training_bin_ranking.html">Training bin ranking (common tests)</a> · <a href="best_bin_vs_random.html">Best bin vs random baselines (random600)</a></nav>
+<h1>Generation cap: cap4096 vs cap2048</h1>
+<div class="card"><div class="ct">Δ accuracy, cap4096 − cap2048 (best epoch, pp)</div><div id="c3"></div></div>
+<div class="card"><div class="ct">truncation rate, Phi-4-mini (% of 401)</div><div id="c4"></div></div><div class="legend" id="leg4"></div>
+</div>
+<script src="common.js"></script>
+<script>
+(function(){
+  const w=1000,h=270,L=64,R=970,T0=18,B=210;
+  const s=svg(w,h);
+  const Y=v=>B-(v+5)/10*(B-T0);
+  s.appendChild(el('line',{x1:L,y1:B,x2:R,y2:B,stroke:'#8b93a1'}));
+  [-4,-2,0,2,4].forEach(v=>{s.appendChild(el('line',{x1:L,y1:Y(v),x2:R,y2:Y(v),stroke:v===0?'#8b93a1':'rgba(26,42,68,.08)','stroke-width':v===0?1.4:1}));txt(s,L-7,Y(v)+4,(v>0?'+':'')+v,{a:'end'})});
+  const bw=26,gap=8,gw=(R-L)/6;
+  for(let b=0;b<6;b++){
+    const x0=L+b*gw+gw/2-(2*bw+gap)/2;
+    [['q',0],['p',1]].forEach(([m,i])=>{
+      const d=(best(m+'4096',b)-best(m+'2048',b))*100;
+      const x=x0+i*(bw+gap),y=Math.min(Y(d),Y(0)),hh=Math.abs(Y(d)-Y(0));
+      s.appendChild(el('rect',{x,y,width:bw,height:Math.max(hh,1),fill:m==='q'?'#2a6fdb':'#c2563a',opacity:.85,rx:2}));
+      txt(s,x+bw/2,d>=0?Y(d)-6:Y(d)+13,(d>=0?'+':'')+d.toFixed(1),{fs:10.5,f:m==='q'?'#2a6fdb':'#c2563a',w:600});
+    });
+    txt(s,L+b*gw+gw/2,B+18,'bin '+b);
+  }
+  txt(s,L,h-8,'■ Qwen-3B   ■ Phi-4-mini   ·   positive = cap4096 better',{a:'start',fs:11.5});
+  document.getElementById('c3').appendChild(s);
+})();
+(function(){
+  const w=1000,h=320,L=64,R=970,T0=18,B=262;
+  const s=svg(w,h);const X=i=>L+i*(R-L)/4;
+  const Y=axes(s,L,R,T0,B,0,.75,[0,.1,.2,.3,.5,.75],EP.map((_,i)=>X(i)),EP.map(String));
+  txt(s,(L+R)/2,B+34,'epoch');
+  const cols=['#0d9488','#2a6fdb','#7c5cbf','#c2563a','#d4a017','#1a2a44'];
+  ['p2048','p4096'].forEach(k=>{
+    for(let b=0;b<6;b++){
+      const pts=T[k][b].map((v,i)=>[X(i),Y(v/401)]);
+      s.appendChild(el('path',{d:pts.map((p,i)=>(i?'L':'M')+p[0]+' '+p[1]).join(' '),fill:'none',stroke:cols[b],'stroke-width':k==='p4096'?2.4:1.6,'stroke-dasharray':k==='p2048'?'4 3':'',opacity:k==='p2048'?.55:1}));
+    }
+  });
+  document.getElementById('c4').appendChild(s);
+  document.getElementById('leg4').innerHTML=cols.map((c,b)=>`<span><i style="border-top-color:${c}"></i>bin ${b}</span>`).join('')+'<span style="color:#6b7385">solid = cap4096 · dashed = cap2048</span>';
+})();
+</script>
+</body></html>
