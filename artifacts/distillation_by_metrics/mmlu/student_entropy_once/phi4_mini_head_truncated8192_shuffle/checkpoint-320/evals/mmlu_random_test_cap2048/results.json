@@ -1,0 +1,7 @@
+{
+  "accuracy": 0.5394846217788861,
+  "total": 2406,
+  "correct": 1298,
+  "num_truncated": 3,
+  "model_path": "/workspace/src/experiments/distillation_by_metrics/mmlu/../../../../artifacts/distillation_by_metrics/mmlu/student_entropy_once/phi4_mini_head_truncated8192_shuffle/checkpoint-320"
+}
