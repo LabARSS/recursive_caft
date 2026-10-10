@@ -1,0 +1,7 @@
+{
+  "accuracy": 0.5440565253532834,
+  "total": 2406,
+  "correct": 1309,
+  "num_truncated": 557,
+  "model_path": "/workspace/src/experiments/distillation_by_metrics/mmlu/../../../../artifacts/distillation_by_metrics/mmlu/random/phi4_mini_head_truncated8192_seed43/checkpoint-4000"
+}

@@ -1,0 +1,7 @@
+{
+  "accuracy": 0.5174563591022444,
+  "total": 2406,
+  "correct": 1245,
+  "num_truncated": 2,
+  "model_path": "/workspace/src/experiments/distillation_by_metrics/mmlu/../../../../artifacts/distillation_by_metrics/mmlu/random/qwen_3b_head_truncated8192_sanity_check/checkpoint-750"
+}

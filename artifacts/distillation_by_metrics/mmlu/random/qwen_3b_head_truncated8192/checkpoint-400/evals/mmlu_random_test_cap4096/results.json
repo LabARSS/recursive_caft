@@ -1,0 +1,7 @@
+{
+  "accuracy": 0.5270157938487116,
+  "total": 2406,
+  "correct": 1268,
+  "num_truncated": 1,
+  "model_path": "/src/recursive_caft/src/experiments/distillation_by_metrics/mmlu/../../../../artifacts/distillation_by_metrics/mmlu/random/qwen_3b_head_truncated8192/checkpoint-400"
+}
