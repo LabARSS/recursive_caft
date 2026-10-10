@@ -1,0 +1,7 @@
+{
+  "accuracy": 0.5947630922693267,
+  "total": 2406,
+  "correct": 1431,
+  "num_truncated": 0,
+  "model_path": "/src/recursive_caft/src/experiments/distillation_by_metrics/mmlu/../../../../artifacts/distillation_by_metrics/mmlu/entropy_gain_once/phi4_mini_head_truncated8192_topk2048/checkpoint-320"
+}
