@@ -1,0 +1,310 @@
+{
+  "gpqa_llama_3b.parquet": {
+    "dataset": "gpqa",
+    "ln_vocab_size": 11.761783545564427,
+    "model_id": "meta-llama/Llama-3.2-3B-Instruct",
+    "model_key": "llama_3b",
+    "normalized_columns": [
+      "entropy_value"
+    ],
+    "rows": 546,
+    "tokenizer_len": 128256,
+    "tokenizer_vocab_size": 128000,
+    "vocab_size": 128256
+  },
+  "gpqa_llama_70b.parquet": {
+    "dataset": "gpqa",
+    "ln_vocab_size": 11.761783545564427,
+    "model_id": "meta-llama/Llama-3.3-70B-Instruct",
+    "model_key": "llama_70b",
+    "normalized_columns": [
+      "entropy_value"
+    ],
+    "rows": 546,
+    "tokenizer_len": 128256,
+    "tokenizer_vocab_size": 128000,
+    "vocab_size": 128256
+  },
+  "gpqa_mistral_24b.parquet": {
+    "dataset": "gpqa",
+    "ln_vocab_size": 11.78350206951907,
+    "model_id": "mistralai/Mistral-Small-24B-Instruct-2501",
+    "model_key": "mistral_24b",
+    "normalized_columns": [
+      "entropy_value"
+    ],
+    "rows": 546,
+    "tokenizer_len": 131072,
+    "tokenizer_vocab_size": 131072,
+    "vocab_size": 131072
+  },
+  "gpqa_phi4mini.parquet": {
+    "dataset": "gpqa",
+    "ln_vocab_size": 12.206392594341093,
+    "model_id": "microsoft/Phi-4-mini-instruct",
+    "model_key": "phi4mini",
+    "normalized_columns": [
+      "entropy_value"
+    ],
+    "rows": 546,
+    "tokenizer_len": 200029,
+    "tokenizer_vocab_size": 200019,
+    "vocab_size": 200064
+  },
+  "gpqa_qwen_32b.parquet": {
+    "dataset": "gpqa",
+    "ln_vocab_size": 11.932056763842207,
+    "model_id": "Qwen/Qwen2.5-32B-Instruct",
+    "model_key": "qwen_32b",
+    "normalized_columns": [
+      "entropy_value"
+    ],
+    "rows": 546,
+    "tokenizer_len": 151665,
+    "tokenizer_vocab_size": 151643,
+    "vocab_size": 152064
+  },
+  "gpqa_qwen_3b.parquet": {
+    "dataset": "gpqa",
+    "ln_vocab_size": 11.931214658529285,
+    "model_id": "Qwen/Qwen2.5-3B-Instruct",
+    "model_key": "qwen_3b",
+    "normalized_columns": [
+      "entropy_value"
+    ],
+    "rows": 546,
+    "tokenizer_len": 151665,
+    "tokenizer_vocab_size": 151643,
+    "vocab_size": 151936
+  },
+  "gpqa_qwen_72b.parquet": {
+    "dataset": "gpqa",
+    "ln_vocab_size": 11.932056763842207,
+    "model_id": "Qwen/Qwen2.5-72B-Instruct",
+    "model_key": "qwen_72b",
+    "normalized_columns": [
+      "entropy_value"
+    ],
+    "rows": 546,
+    "tokenizer_len": 151665,
+    "tokenizer_vocab_size": 151643,
+    "vocab_size": 152064
+  },
+  "gsm8k_llama_3b.parquet": {
+    "dataset": "gsm8k",
+    "ln_vocab_size": 11.761783545564427,
+    "model_id": "meta-llama/Llama-3.2-3B-Instruct",
+    "model_key": "llama_3b",
+    "normalized_columns": [
+      "entropy_values",
+      "first_token_entropy",
+      "last_token_entropy",
+      "max_entropy",
+      "mean_entropy",
+      "min_entropy"
+    ],
+    "rows": 7473,
+    "tokenizer_len": 128256,
+    "tokenizer_vocab_size": 128000,
+    "vocab_size": 128256
+  },
+  "gsm8k_llama_70b.parquet": {
+    "dataset": "gsm8k",
+    "ln_vocab_size": 11.761783545564427,
+    "model_id": "meta-llama/Llama-3.3-70B-Instruct",
+    "model_key": "llama_70b",
+    "normalized_columns": [
+      "entropy_values",
+      "first_token_entropy",
+      "last_token_entropy",
+      "max_entropy",
+      "mean_entropy",
+      "min_entropy"
+    ],
+    "rows": 7473,
+    "tokenizer_len": 128256,
+    "tokenizer_vocab_size": 128000,
+    "vocab_size": 128256
+  },
+  "gsm8k_mistral_24b.parquet": {
+    "dataset": "gsm8k",
+    "ln_vocab_size": 11.78350206951907,
+    "model_id": "mistralai/Mistral-Small-24B-Instruct-2501",
+    "model_key": "mistral_24b",
+    "normalized_columns": [
+      "entropy_values",
+      "first_token_entropy",
+      "last_token_entropy",
+      "max_entropy",
+      "mean_entropy",
+      "min_entropy"
+    ],
+    "rows": 7473,
+    "tokenizer_len": 131072,
+    "tokenizer_vocab_size": 131072,
+    "vocab_size": 131072
+  },
+  "gsm8k_phi4mini.parquet": {
+    "dataset": "gsm8k",
+    "ln_vocab_size": 12.206392594341093,
+    "model_id": "microsoft/Phi-4-mini-instruct",
+    "model_key": "phi4mini",
+    "normalized_columns": [
+      "entropy_values",
+      "first_token_entropy",
+      "last_token_entropy",
+      "max_entropy",
+      "mean_entropy",
+      "min_entropy"
+    ],
+    "rows": 7473,
+    "tokenizer_len": 200029,
+    "tokenizer_vocab_size": 200019,
+    "vocab_size": 200064
+  },
+  "gsm8k_qwen_32b.parquet": {
+    "dataset": "gsm8k",
+    "ln_vocab_size": 11.932056763842207,
+    "model_id": "Qwen/Qwen2.5-32B-Instruct",
+    "model_key": "qwen_32b",
+    "normalized_columns": [
+      "entropy_values",
+      "first_token_entropy",
+      "last_token_entropy",
+      "max_entropy",
+      "mean_entropy",
+      "min_entropy"
+    ],
+    "rows": 7473,
+    "tokenizer_len": 151665,
+    "tokenizer_vocab_size": 151643,
+    "vocab_size": 152064
+  },
+  "gsm8k_qwen_3b.parquet": {
+    "dataset": "gsm8k",
+    "ln_vocab_size": 11.931214658529285,
+    "model_id": "Qwen/Qwen2.5-3B-Instruct",
+    "model_key": "qwen_3b",
+    "normalized_columns": [
+      "entropy_values",
+      "first_token_entropy",
+      "last_token_entropy",
+      "max_entropy",
+      "mean_entropy",
+      "min_entropy"
+    ],
+    "rows": 7473,
+    "tokenizer_len": 151665,
+    "tokenizer_vocab_size": 151643,
+    "vocab_size": 151936
+  },
+  "gsm8k_qwen_72b.parquet": {
+    "dataset": "gsm8k",
+    "ln_vocab_size": 11.932056763842207,
+    "model_id": "Qwen/Qwen2.5-72B-Instruct",
+    "model_key": "qwen_72b",
+    "normalized_columns": [
+      "entropy_values",
+      "first_token_entropy",
+      "last_token_entropy",
+      "max_entropy",
+      "mean_entropy",
+      "min_entropy"
+    ],
+    "rows": 7473,
+    "tokenizer_len": 151665,
+    "tokenizer_vocab_size": 151643,
+    "vocab_size": 152064
+  },
+  "mmlu_llama_3b.parquet": {
+    "dataset": "mmlu",
+    "ln_vocab_size": 11.761783545564427,
+    "model_id": "meta-llama/Llama-3.2-3B-Instruct",
+    "model_key": "llama_3b",
+    "normalized_columns": [
+      "entropy_value"
+    ],
+    "rows": 12032,
+    "tokenizer_len": 128256,
+    "tokenizer_vocab_size": 128000,
+    "vocab_size": 128256
+  },
+  "mmlu_llama_70b.parquet": {
+    "dataset": "mmlu",
+    "ln_vocab_size": 11.761783545564427,
+    "model_id": "meta-llama/Llama-3.3-70B-Instruct",
+    "model_key": "llama_70b",
+    "normalized_columns": [
+      "entropy_value"
+    ],
+    "rows": 12032,
+    "tokenizer_len": 128256,
+    "tokenizer_vocab_size": 128000,
+    "vocab_size": 128256
+  },
+  "mmlu_mistral_24b.parquet": {
+    "dataset": "mmlu",
+    "ln_vocab_size": 11.78350206951907,
+    "model_id": "mistralai/Mistral-Small-24B-Instruct-2501",
+    "model_key": "mistral_24b",
+    "normalized_columns": [
+      "entropy_value"
+    ],
+    "rows": 12032,
+    "tokenizer_len": 131072,
+    "tokenizer_vocab_size": 131072,
+    "vocab_size": 131072
+  },
+  "mmlu_phi4mini.parquet": {
+    "dataset": "mmlu",
+    "ln_vocab_size": 12.206392594341093,
+    "model_id": "microsoft/Phi-4-mini-instruct",
+    "model_key": "phi4mini",
+    "normalized_columns": [
+      "entropy_value"
+    ],
+    "rows": 12032,
+    "tokenizer_len": 200029,
+    "tokenizer_vocab_size": 200019,
+    "vocab_size": 200064
+  },
+  "mmlu_qwen_32b.parquet": {
+    "dataset": "mmlu",
+    "ln_vocab_size": 11.932056763842207,
+    "model_id": "Qwen/Qwen2.5-32B-Instruct",
+    "model_key": "qwen_32b",
+    "normalized_columns": [
+      "entropy_value"
+    ],
+    "rows": 12032,
+    "tokenizer_len": 151665,
+    "tokenizer_vocab_size": 151643,
+    "vocab_size": 152064
+  },
+  "mmlu_qwen_3b.parquet": {
+    "dataset": "mmlu",
+    "ln_vocab_size": 11.931214658529285,
+    "model_id": "Qwen/Qwen2.5-3B-Instruct",
+    "model_key": "qwen_3b",
+    "normalized_columns": [
+      "entropy_value"
+    ],
+    "rows": 12032,
+    "tokenizer_len": 151665,
+    "tokenizer_vocab_size": 151643,
+    "vocab_size": 151936
+  },
+  "mmlu_qwen_72b.parquet": {
+    "dataset": "mmlu",
+    "ln_vocab_size": 11.932056763842207,
+    "model_id": "Qwen/Qwen2.5-72B-Instruct",
+    "model_key": "qwen_72b",
+    "normalized_columns": [
+      "entropy_value"
+    ],
+    "rows": 12032,
+    "tokenizer_len": 151665,
+    "tokenizer_vocab_size": 151643,
+    "vocab_size": 152064
+  }
+}
