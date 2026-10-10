@@ -1,0 +1,7 @@
+{
+  "accuracy": 0.45926849542809645,
+  "total": 2406,
+  "correct": 1105,
+  "num_truncated": 0,
+  "model_path": "/src/recursive_caft/src/experiments/distillation_on_synthetic_traces/mmlu/distill_w_explained/../../../../../artifacts/distillation_on_synthetic_traces/mmlu/distill_w_explained/qwen_3b/checkpoint-151"
+}

@@ -1,0 +1,7 @@
+{
+  "accuracy": 0.48129675810473815,
+  "total": 2406,
+  "correct": 1158,
+  "num_truncated": 0,
+  "model_path": "/src/recursive_caft/src/experiments/distillation_on_synthetic_traces/mmlu/direct_reasoning_trace/../../../../../artifacts/distillation_on_synthetic_traces/mmlu/direct_reasoning_trace/llama_3b/checkpoint-1510"
+}

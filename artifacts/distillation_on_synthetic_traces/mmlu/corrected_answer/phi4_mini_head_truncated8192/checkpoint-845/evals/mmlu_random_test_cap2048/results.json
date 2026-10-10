@@ -1,0 +1,7 @@
+{
+  "accuracy": 0.6375727348295926,
+  "total": 2406,
+  "correct": 1534,
+  "num_truncated": 0,
+  "model_path": "/src/recursive_caft/src/experiments/distillation_on_synthetic_traces/mmlu/../../../../artifacts/distillation_on_synthetic_traces/mmlu/corrected_answer/phi4_mini_head_truncated8192/checkpoint-845"
+}

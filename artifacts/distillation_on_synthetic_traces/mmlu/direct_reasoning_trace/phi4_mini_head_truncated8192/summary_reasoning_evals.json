@@ -1,0 +1,92 @@
+{
+  "mmlu_random_test": [
+    {
+      "epoch": 1.0,
+      "checkpoint": "checkpoint-151",
+      "accuracy": 0.48794679966749793,
+      "total": 2406,
+      "correct": 1174,
+      "num_truncated": 597
+    },
+    {
+      "epoch": 2.0,
+      "checkpoint": "checkpoint-302",
+      "accuracy": 0.4979218620116376,
+      "total": 2406,
+      "correct": 1198,
+      "num_truncated": 729
+    },
+    {
+      "epoch": 3.0,
+      "checkpoint": "checkpoint-453",
+      "accuracy": 0.5099750623441397,
+      "total": 2406,
+      "correct": 1227,
+      "num_truncated": 643
+    },
+    {
+      "epoch": 4.0,
+      "checkpoint": "checkpoint-604",
+      "accuracy": 0.5199501246882793,
+      "total": 2406,
+      "correct": 1251,
+      "num_truncated": 654
+    },
+    {
+      "epoch": 5.0,
+      "checkpoint": "checkpoint-755",
+      "accuracy": 0.5166251039068994,
+      "total": 2406,
+      "correct": 1243,
+      "num_truncated": 731
+    },
+    {
+      "epoch": 6.0,
+      "checkpoint": "checkpoint-906",
+      "accuracy": 0.5091438071487947,
+      "total": 2406,
+      "correct": 1225,
+      "num_truncated": 704
+    },
+    {
+      "epoch": 8.0,
+      "checkpoint": "checkpoint-1208",
+      "accuracy": 0.529925187032419,
+      "total": 2406,
+      "correct": 1275,
+      "num_truncated": 617
+    },
+    {
+      "epoch": 10.0,
+      "checkpoint": "checkpoint-1510",
+      "accuracy": 0.5502909393183707,
+      "total": 2406,
+      "correct": 1324,
+      "num_truncated": 480
+    },
+    {
+      "epoch": 12.0,
+      "checkpoint": "checkpoint-1812",
+      "accuracy": 0.5544472152950956,
+      "total": 2406,
+      "correct": 1334,
+      "num_truncated": 421
+    },
+    {
+      "epoch": 15.0,
+      "checkpoint": "checkpoint-2265",
+      "accuracy": 0.5768911055694098,
+      "total": 2406,
+      "correct": 1388,
+      "num_truncated": 250
+    },
+    {
+      "epoch": 20.0,
+      "checkpoint": "checkpoint-3020",
+      "accuracy": 0.5760598503740648,
+      "total": 2406,
+      "correct": 1386,
+      "num_truncated": 240
+    }
+  ]
+}

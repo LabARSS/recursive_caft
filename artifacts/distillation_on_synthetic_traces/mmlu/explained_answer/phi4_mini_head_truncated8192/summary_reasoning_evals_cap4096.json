@@ -1,0 +1,44 @@
+{
+  "mmlu_random_test_cap4096": [
+    {
+      "epoch": 2.0,
+      "checkpoint": "checkpoint-260",
+      "accuracy": 0.5615128844555278,
+      "total": 2406,
+      "correct": 1351,
+      "num_truncated": 79
+    },
+    {
+      "epoch": 5.0,
+      "checkpoint": "checkpoint-650",
+      "accuracy": 0.572734829592685,
+      "total": 2406,
+      "correct": 1378,
+      "num_truncated": 66
+    },
+    {
+      "epoch": 10.0,
+      "checkpoint": "checkpoint-1300",
+      "accuracy": 0.5511221945137157,
+      "total": 2406,
+      "correct": 1326,
+      "num_truncated": 35
+    },
+    {
+      "epoch": 15.0,
+      "checkpoint": "checkpoint-1950",
+      "accuracy": 0.5448877805486284,
+      "total": 2406,
+      "correct": 1311,
+      "num_truncated": 30
+    },
+    {
+      "epoch": 20.0,
+      "checkpoint": "checkpoint-2600",
+      "accuracy": 0.5423940149625935,
+      "total": 2406,
+      "correct": 1305,
+      "num_truncated": 12
+    }
+  ]
+}

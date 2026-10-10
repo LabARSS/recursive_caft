@@ -1,0 +1,92 @@
+{
+  "mmlu_random_test": [
+    {
+      "epoch": 1.0,
+      "checkpoint": "checkpoint-151",
+      "accuracy": 0.40689941812136327,
+      "total": 2406,
+      "correct": 979,
+      "num_truncated": 7
+    },
+    {
+      "epoch": 2.0,
+      "checkpoint": "checkpoint-302",
+      "accuracy": 0.44970906068162925,
+      "total": 2406,
+      "correct": 1082,
+      "num_truncated": 1
+    },
+    {
+      "epoch": 3.0,
+      "checkpoint": "checkpoint-453",
+      "accuracy": 0.4630091438071488,
+      "total": 2406,
+      "correct": 1114,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 4.0,
+      "checkpoint": "checkpoint-604",
+      "accuracy": 0.4484621778886118,
+      "total": 2406,
+      "correct": 1079,
+      "num_truncated": 5
+    },
+    {
+      "epoch": 5.0,
+      "checkpoint": "checkpoint-755",
+      "accuracy": 0.457190357439734,
+      "total": 2406,
+      "correct": 1100,
+      "num_truncated": 12
+    },
+    {
+      "epoch": 6.0,
+      "checkpoint": "checkpoint-906",
+      "accuracy": 0.470906068162926,
+      "total": 2406,
+      "correct": 1133,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 8.0,
+      "checkpoint": "checkpoint-1208",
+      "accuracy": 0.4767248545303408,
+      "total": 2406,
+      "correct": 1147,
+      "num_truncated": 1
+    },
+    {
+      "epoch": 10.0,
+      "checkpoint": "checkpoint-1510",
+      "accuracy": 0.48129675810473815,
+      "total": 2406,
+      "correct": 1158,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 12.0,
+      "checkpoint": "checkpoint-1812",
+      "accuracy": 0.4630091438071488,
+      "total": 2406,
+      "correct": 1114,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 15.0,
+      "checkpoint": "checkpoint-2265",
+      "accuracy": 0.46384039900249374,
+      "total": 2406,
+      "correct": 1116,
+      "num_truncated": 3
+    },
+    {
+      "epoch": 20.0,
+      "checkpoint": "checkpoint-3020",
+      "accuracy": 0.46425602660016624,
+      "total": 2406,
+      "correct": 1117,
+      "num_truncated": 0
+    }
+  ]
+}

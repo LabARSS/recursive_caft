@@ -1,0 +1,7 @@
+{
+  "accuracy": 0.5423940149625935,
+  "total": 2406,
+  "correct": 1305,
+  "num_truncated": 12,
+  "model_path": "/workspace/src/experiments/distillation_on_synthetic_traces/mmlu/../../../../artifacts/distillation_on_synthetic_traces/mmlu/explained_answer/phi4_mini_head_truncated8192/checkpoint-2600"
+}

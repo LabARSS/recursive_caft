@@ -1,0 +1,92 @@
+{
+  "mmlu_random_test": [
+    {
+      "epoch": 1.0,
+      "checkpoint": "checkpoint-151",
+      "accuracy": 0.44305901911886947,
+      "total": 2406,
+      "correct": 1066,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 2.0,
+      "checkpoint": "checkpoint-302",
+      "accuracy": 0.5037406483790524,
+      "total": 2406,
+      "correct": 1212,
+      "num_truncated": 2
+    },
+    {
+      "epoch": 3.0,
+      "checkpoint": "checkpoint-453",
+      "accuracy": 0.4945968412302577,
+      "total": 2406,
+      "correct": 1190,
+      "num_truncated": 7
+    },
+    {
+      "epoch": 4.0,
+      "checkpoint": "checkpoint-604",
+      "accuracy": 0.5120532003325021,
+      "total": 2406,
+      "correct": 1232,
+      "num_truncated": 3
+    },
+    {
+      "epoch": 5.0,
+      "checkpoint": "checkpoint-755",
+      "accuracy": 0.48877805486284287,
+      "total": 2406,
+      "correct": 1176,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 6.0,
+      "checkpoint": "checkpoint-906",
+      "accuracy": 0.5024937655860349,
+      "total": 2406,
+      "correct": 1209,
+      "num_truncated": 2
+    },
+    {
+      "epoch": 8.0,
+      "checkpoint": "checkpoint-1208",
+      "accuracy": 0.5220282626766417,
+      "total": 2406,
+      "correct": 1256,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 10.0,
+      "checkpoint": "checkpoint-1510",
+      "accuracy": 0.5091438071487947,
+      "total": 2406,
+      "correct": 1225,
+      "num_truncated": 2
+    },
+    {
+      "epoch": 12.0,
+      "checkpoint": "checkpoint-1812",
+      "accuracy": 0.5120532003325021,
+      "total": 2406,
+      "correct": 1232,
+      "num_truncated": 2
+    },
+    {
+      "epoch": 15.0,
+      "checkpoint": "checkpoint-2265",
+      "accuracy": 0.512884455527847,
+      "total": 2406,
+      "correct": 1234,
+      "num_truncated": 0
+    },
+    {
+      "epoch": 20.0,
+      "checkpoint": "checkpoint-3020",
+      "accuracy": 0.5037406483790524,
+      "total": 2406,
+      "correct": 1212,
+      "num_truncated": 2
+    }
+  ]
+}

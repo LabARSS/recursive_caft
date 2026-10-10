@@ -1,0 +1,7 @@
+{
+  "accuracy": 0.45760598503740646,
+  "total": 2406,
+  "correct": 1101,
+  "num_truncated": 1,
+  "model_path": "/src/recursive_caft/src/experiments/distillation_on_synthetic_traces/mmlu/../../../../artifacts/distillation_on_synthetic_traces/mmlu/corrected_answer/qwen_3b_middle_truncated8192/checkpoint-334"
+}
