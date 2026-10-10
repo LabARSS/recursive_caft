@@ -1,0 +1,26 @@
+.venv
+.DS_Store
+*.pyc
+__pycache__
+.env
+.vscode
+*.tmp
+*.tmp.parquet
+
+# 1. ignore everything *inside* artifacts  (NOTE: /** , not bare 'artifacts')
+artifacts/**
+# 2. but let Git descend into every subdirectory (trailing slash = dirs only)
+!artifacts/**/
+# 3. re-include the eval files at any depth under any evals/ dir
+!artifacts/**/evals/**/responses.parquet
+!artifacts/**/evals/**/results.json
+!artifacts/**/base_model/**/responses.parquet
+!artifacts/**/base_model/**/results.json
+!artifacts/**/summary_reasoning_evals*.json
+!artifacts/**/summary_cot*.json
+!artifacts/**/summary_single_token*.json
+!artifacts/**/*summary_common*.json
+!artifacts/distillation_by_complexity_splits/**/charts/*.html
+!artifacts/distillation_by_complexity_splits/**/charts/*.js
+!artifacts/**/resampling_trainer_data/**/estimation_stats.json
+!artifacts/**/resampling_trainer_data/**/*.parquet

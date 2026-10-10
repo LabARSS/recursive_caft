@@ -1,0 +1,11 @@
+from core.dataset_samplers.student_entropy_sampler import StudentEntropySampler
+from experiments.distillation_by_metrics.mmlu.shared import get_merged_adapter_with_data_mix, run
+
+run(
+    model_name="phi4_mini",
+    relative_out_path="./student_entropy_extended/phi4_mini_head_truncated8192",
+    train_dataset="train_corrected_answer_deepseek_v4_pro_and_others_head_truncated8192",
+    train_dataset_adapter=get_merged_adapter_with_data_mix(StudentEntropySampler),
+    save_schedule=[10, 20, 50, 80, 100, 150, 200],
+    shuffle=True,
+)

@@ -1,0 +1,25 @@
+from core.dataset_samplers.base_sampler import BaseDatasetSamplerConfig
+from core.dataset_samplers.entropy_gain_sampler import EntropyGainSampler
+from core.datasets.causal_dataset_adapter import CausalDatasetAdapter
+from core.datasets.mmlu.mmlu_reasoning_response_dataset import MMLUReasoningResponseDataset
+from core.datasets.mmlu.mmlu_single_token_response_dataset import QADatasetConfig
+from experiments.distillation_by_metrics.mmlu.shared import run
+
+run(
+    model_name="llama_3b",
+    relative_out_path="./entropy_gain_once/llama_3b_head_truncated8192",
+    train_dataset="train_corrected_answer_deepseek_v4_pro_and_others_head_truncated8192",
+    train_dataset_adapter=CausalDatasetAdapter(
+        dataset=MMLUReasoningResponseDataset(
+            config=QADatasetConfig(
+                path="should be overridden by SetResamplingPathCallback",
+                dataset_id="train_corrected_answer_deepseek_v4_pro_and_others_head_truncated8192",
+            ),
+            # Will be overridden
+            tokenizer=None,  # type: ignore
+        ),
+        dataset_sampler=EntropyGainSampler(BaseDatasetSamplerConfig(top_k=1024)),
+    ),
+    save_schedule=[10, 20, 50, 80, 100],
+    resampling_schedule=[0],
+)
