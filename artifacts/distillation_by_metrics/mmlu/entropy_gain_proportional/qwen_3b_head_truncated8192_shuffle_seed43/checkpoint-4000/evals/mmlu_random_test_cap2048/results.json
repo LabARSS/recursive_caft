@@ -1,0 +1,7 @@
+{
+  "accuracy": 0.5635910224438903,
+  "total": 2406,
+  "correct": 1356,
+  "num_truncated": 0,
+  "model_path": "/workspace/src/experiments/distillation_by_metrics/mmlu/../../../../artifacts/distillation_by_metrics/mmlu/entropy_gain_proportional/qwen_3b_head_truncated8192_shuffle_seed43/checkpoint-4000"
+}
