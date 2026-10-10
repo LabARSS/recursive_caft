@@ -1,0 +1,7 @@
+{
+  "accuracy": 0.49542809642560265,
+  "total": 2406,
+  "correct": 1192,
+  "num_truncated": 0,
+  "model_path": "/data/epanov_s/kaspi_kz_exps/artifacts/distillation_by_metrics/mmlu/night_runs/20261006-183607/experiment_3/checkpoint-3000"
+}
